@@ -29,6 +29,9 @@ class Question:
     source: str                      # "nq" | "triviaqa" | "popqa" | "webq" | "franq_longform"
     gold_answers: list[str] = field(default_factory=list)   # short-form: список допустимых ответов
     passages: list[dict] | None = None                       # long-form: готовые пассажи (без ретривала)
+    franq_raw: dict | None = None                             # long-form: оригинальная запись FRANQ целиком
+                                                                # (answer, claims, auto_labels) — для teacher_force
+                                                                # и переиспользования разметки, см. labeling.py
     split: str = "dev"
 
 
@@ -92,7 +95,8 @@ def parse_franq_retrieval(retrieval_text: str) -> list[dict]:
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(retrieval_text)
         text = retrieval_text[start:end].strip()
-        passages.append({"rank": int(m.group(1)), "text": text, "doc_id": f"franq_p{m.group(1)}", "is_golden": None})
+        passages.append({"rank": int(m.group(1)), "text": text, "doc_id": f"franq_p{m.group(1)}",
+                          "is_golden": None, "score": None})  # не из ретривера — score недоступен
     return passages
 
 
@@ -108,6 +112,7 @@ def load_franq_longform(repo_claim_level_dataset_dir: Path, model_file: str = "F
             question=ex["question"].strip(),
             source="franq_longform",
             passages=passages,
+            franq_raw=ex,
             split="dev",
         ))
     return out

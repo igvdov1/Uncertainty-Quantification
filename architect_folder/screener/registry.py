@@ -157,11 +157,16 @@ def compute_all_signals(record: Record) -> dict[str, float]:
     _rag/_cb), общие retrieval-сигналы и uplift_* для каждой per-mode пары."""
     out: dict[str, float] = {}
 
+    # TypeError ловит в т.ч. score=None у пассажей без ретривера (long-form
+    # FRANQ, пассажи распарсены из текста, не из скорингового ретривера) —
+    # найдено прогоном настоящего собранного дампа через скринер, не на синтетике.
+    _SKIP = (KeyError, IndexError, ZeroDivisionError, TypeError)
+
     for spec in PER_MODE_SPECS:
         for mode, suffix in MODE_SUFFIX.items():
             try:
                 out[f"{spec.name}_{suffix}"] = spec.fn(record, mode)
-            except (KeyError, IndexError, ZeroDivisionError):
+            except _SKIP:
                 out[f"{spec.name}_{suffix}"] = float("nan")
         rag_key, cb_key = f"{spec.name}_rag", f"{spec.name}_cb"
         if not (np.isnan(out[rag_key]) or np.isnan(out[cb_key])):
@@ -172,7 +177,7 @@ def compute_all_signals(record: Record) -> dict[str, float]:
     for spec in SHARED_SPECS:
         try:
             out[spec.name] = spec.fn(record)
-        except (KeyError, IndexError, ZeroDivisionError):
+        except _SKIP:
             out[spec.name] = float("nan")
 
     return out

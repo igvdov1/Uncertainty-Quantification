@@ -84,7 +84,14 @@ def claim_level_kendall(records: list[dict], target: str = "factual") -> float:
             continue
         scores, labels = [], []
         for c in cl:
-            a, b = c["token_span"]
+            # не у всех источников клеймы выровнены на token_span (напр.
+            # long-form FRANQ переиспользует их разметку без спанов на
+            # наших токенах, см. cluster_runbook.md "Известные ограничения") —
+            # такие клеймы пропускаем, не роняем весь прогон
+            span = c.get("token_span")
+            if not span:
+                continue
+            a, b = span
             span_lp = lp[a:b] if b > a else lp[a:min(a + 1, len(lp))]
             if not span_lp:
                 continue
