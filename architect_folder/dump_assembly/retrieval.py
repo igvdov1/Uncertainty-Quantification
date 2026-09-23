@@ -100,3 +100,31 @@ def generate_paraphrases(model, tokenizer, question: str, device, n: int = 3) ->
         for i in range(n)
     ]
     return paraphrases
+
+
+def _cli_prepare_input() -> None:
+    """CLI для шага 2a cluster_runbook.md — готовит входной JSONL для
+    passage_retrieval.py. Запускать из architect_folder/:
+        python -m dump_assembly.retrieval --franq-dataset-dir <путь> \
+            --dev-size 300 --test-size 300 --out retrieval_input.jsonl
+    """
+    import argparse
+
+    from .questions import build_pilot_question_set
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--franq-dataset-dir", required=True, type=Path)
+    parser.add_argument("--dev-size", type=int, default=300)
+    parser.add_argument("--test-size", type=int, default=300)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--out", required=True, type=Path)
+    args = parser.parse_args()
+
+    qs = build_pilot_question_set(args.franq_dataset_dir, args.dev_size, args.test_size, args.seed)
+    shortform = [q for q in qs if q.passages is None]
+    write_retrieval_input(shortform, args.out)
+    print(f"Wrote {len(shortform)} short-form questions to {args.out}")
+
+
+if __name__ == "__main__":
+    _cli_prepare_input()
