@@ -48,8 +48,16 @@ EMBEDDINGS_URL = "https://dl.fbaipublicfiles.com/contriever/embeddings/contrieve
 VECTOR_SIZE = 768
 
 
-def stream_load_passages(url: str = PSGS_URL, log_every: int = 2_000_000) -> dict[str, dict]:
+def stream_load_passages(
+    url: str = PSGS_URL,
+    wanted_ids: set[str] | None = None,
+    log_every: int = 2_000_000,
+) -> dict[str, dict]:
+    """wanted_ids=None грузит ВСЕ ~21М пассажей — так упал прогон на кластере
+    (OOM на 10М из 21М). wanted_ids сужает до конкретных ID (обычно —
+    результат поиска, на порядки меньше корпуса) и держит в памяти только их."""
     passages: dict[str, dict] = {}
+    remaining = set(wanted_ids) if wanted_ids is not None else None
     with requests.get(url, stream=True, timeout=60) as r:
         r.raise_for_status()
         with gzip.GzipFile(fileobj=r.raw) as gz:
@@ -58,10 +66,17 @@ def stream_load_passages(url: str = PSGS_URL, log_every: int = 2_000_000) -> dic
             for i, row in enumerate(reader):
                 if row[0] == "id":
                     continue
+                if remaining is not None:
+                    if row[0] not in remaining:
+                        continue
+                    remaining.discard(row[0])
                 passages[row[0]] = {"text": row[1], "title": row[2]}
                 if log_every and (i + 1) % log_every == 0:
-                    print(f"  passages loaded: {i + 1}")
-    print(f"Total passages: {len(passages)}")
+                    print(f"  passages scanned: {i + 1} (found {len(passages)}"
+                          + (f"/{len(wanted_ids)}" if wanted_ids is not None else "") + ")")
+                if remaining is not None and not remaining:
+                    break  # нашли все нужные ID — не читаем оставшиеся ~10М строк впустую
+    print(f"Total passages loaded: {len(passages)}")
     return passages
 
 
@@ -136,9 +151,10 @@ def main() -> None:
     model = AutoModel.from_pretrained("facebook/contriever-msmarco").to(args.device)
     model.eval()
 
-    print("Streaming passages (psgs_w100.tsv.gz, ~13 ГБ распакованных, без записи на диск)...")
-    passages = stream_load_passages()
-
+    # Порядок важен: сначала эмбеддинги+поиск (нужны только векторы, не
+    # текст), потом пассажи — только для найденных ID. Загрузка всех ~21М
+    # пассажей текстом убила процесс OOM'ом на кластере ещё до эмбеддингов
+    # (см. cluster_runbook.md) — реально нужно на 3 порядка меньше.
     print("Streaming embeddings + building FAISS index (~65 ГБ в RAM, без записи на диск)...")
     index, ids = stream_build_index()
 
@@ -148,6 +164,11 @@ def main() -> None:
 
     print("Searching...")
     results = search(index, ids, query_embeddings, top_k=args.top_k)
+
+    needed_ids = {doc_id for hits in results for doc_id, _ in hits}
+    print(f"Streaming passages (psgs_w100.tsv.gz), фильтр по {len(needed_ids)} найденным ID "
+          f"вместо всех ~21М...")
+    passages = stream_load_passages(wanted_ids=needed_ids)
 
     print(f"Writing {args.out}...")
     with open(args.out, "w") as f:
