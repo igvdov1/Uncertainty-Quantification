@@ -55,11 +55,26 @@ def f1_score(prediction: str, gold: str) -> float:
 
 
 def factuality_shortform(prediction: str, gold_answers: list[str], f1_threshold: float = 0.5) -> int:
-    """1 = факт верен. EM в первую очередь; F1 >= порога — более мягкий
-    допуск на генеративные перефразы (модель не обязана копировать
-    extractive span дословно)."""
+    """1 = факт верен. Основной критерий — gold-ответ СОДЕРЖИТСЯ в
+    сгенерированном тексте (Asai et al. 2024, тот же метод, что описан в
+    ragu README про --acc: 'whether the gold answer is contained in the
+    generated answer'). Не SQuAD-style F1/точное совпадение всей строки —
+    наша модель отвечает полным предложением ("The color ... is white."),
+    а не extractive-спаном, и token-level F1 против короткого gold почти
+    всегда топит precision даже при полностью верном ответе.
+
+    Найдено на реальном дампе (dump_pilot.jsonl): со старой F1-логикой
+    ВСЕ 524 short-form записи получили label_factual=0 без исключений,
+    включая явно правильные ответы (напр. ответ содержит "white",
+    gold=["white"], но F1 между всем предложением и одним словом < 0.5).
+    Это же объясняло аномальный AUROC на A5 — сигнал мерил не
+    factual/non-factual, а long-form/short-form (полный конфаунд)."""
     if exact_match(prediction, gold_answers):
         return 1
+    pred_norm = normalize_answer(prediction)
+    for g in gold_answers:
+        if normalize_answer(g) in pred_norm:
+            return 1
     best_f1 = max((f1_score(prediction, g) for g in gold_answers), default=0.0)
     return int(best_f1 >= f1_threshold)
 
