@@ -31,6 +31,34 @@ from .assemble import assemble_record
 from .questions import Question, build_pilot_question_set
 
 
+def load_completed_qids_and_clean(out_path: Path) -> set[str]:
+    """Для resume: qid уже успешно записанных записей в существующем
+    выводе. Если прошлый прогон упал посреди записи строки, в файле может
+    остаться оборванный, невалидный JSON последней строкой — если потом
+    просто открыть файл на дозапись (append), новая строка приклеится
+    прямо к этому мусору без разделителя и испортит файл. Поэтому здесь
+    файл сразу перезаписывается только валидными строками (аккуратный
+    "compact"), прежде чем начинать append."""
+    if not out_path.exists():
+        return set()
+    valid_lines, completed = [], set()
+    with open(out_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                qid = json.loads(line)["qid"]
+            except (json.JSONDecodeError, KeyError):
+                continue
+            valid_lines.append(line)
+            completed.add(qid)
+    with open(out_path, "w") as f:
+        for line in valid_lines:
+            f.write(line + "\n")
+    return completed
+
+
 def process_one(model, tokenizer, device, q: Question, nli_scorer) -> dict | None:
     is_longform = q.source == "franq_longform"
     passage_texts = [p["text"] for p in (q.passages or [])]
@@ -102,12 +130,21 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None, help="ограничить N вопросов — для смоука")
     parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     parser.add_argument("--nli-device", default="cpu")
+    parser.add_argument("--no-resume", action="store_true",
+                         help="не пропускать уже записанные qid в --out, перезаписать файл с нуля")
     args = parser.parse_args()
 
     print("Loading question set...")
     questions = build_pilot_question_set(args.franq_dataset_dir, args.dev_size, args.test_size, args.seed)
     if args.limit:
         questions = questions[: args.limit]
+
+    already_done = set() if args.no_resume else load_completed_qids_and_clean(args.out)
+    if already_done:
+        n_before = len(questions)
+        questions = [q for q in questions if q.qid not in already_done]
+        print(f"Resume: {len(already_done)} qid уже есть в {args.out}, "
+              f"пропускаю их ({n_before} -> {len(questions)} к обработке)")
 
     needs_retrieval = [q for q in questions if q.passages is None]
     if needs_retrieval and args.retrieval_output:
@@ -116,6 +153,10 @@ def main() -> None:
         print(f"ВНИМАНИЕ: {len(needs_retrieval)} вопросов без retrieval-output — "
               f"нужен --retrieval-output, см. cluster_runbook.md шаг 2", file=sys.stderr)
         questions = [q for q in questions if q.passages is not None]
+
+    if not questions:
+        print("Все вопросы уже обработаны (resume) — нечего делать, модель не загружаю.")
+        return
 
     print(f"Loading model {args.model}...")
     dtype = getattr(torch, args.dtype)
@@ -129,8 +170,9 @@ def main() -> None:
     print("Loading NLI scorer for faithfulness...")
     nli_scorer = labeling.load_nli_scorer(device=args.nli_device)
 
-    print(f"Assembling {len(questions)} records...")
-    with open(args.out, "w") as f:
+    file_mode = "a" if already_done else "w"
+    print(f"Assembling {len(questions)} records (mode={file_mode})...")
+    with open(args.out, file_mode) as f:
         for i, q in enumerate(questions):
             try:
                 record = process_one(model, tokenizer, device, q, nli_scorer)
