@@ -118,6 +118,14 @@ def load_franq_longform(repo_claim_level_dataset_dir: Path, model_file: str = "F
     return out
 
 
+_POOL_SIZE_PER_SOURCE = 1000  # фиксированный размер пула на источник — НЕ зависит от
+                               # dev_size/test_size. Нужно, чтобы перемешивание было одним и тем
+                               # же при разных вызовах, и меньшая выборка (смоук) всегда была
+                               # префиксом большей (реальный прогон пилота) — иначе смоук-тест
+                               # тянет qid, для которых ретривал ещё не посчитан (найдено на
+                               # практике: --dev-size 96 против уже готового ретривала под 300/300).
+
+
 def build_pilot_question_set(
     franq_dataset_dir: Path,
     dev_size: int = 300,
@@ -125,7 +133,10 @@ def build_pilot_question_set(
     seed: int = 0,
 ) -> list[Question]:
     """Состав пилота — A4_dataset.md: все 76 long-form FRANQ в dev целиком,
-    остаток dev+test поровну между 4 short-form источниками."""
+    остаток dev+test поровну между 4 short-form источниками.
+
+    Вложенность подмножеств: при одном seed выборка для dev_size=96 —
+    префикс выборки для dev_size=300 (см. _POOL_SIZE_PER_SOURCE)."""
     longform = load_franq_longform(franq_dataset_dir)
     assert len(longform) == 76, f"ожидались все 76 вопросов FRANQ, получено {len(longform)}"
 
@@ -135,11 +146,16 @@ def build_pilot_question_set(
 
     per_source_dev = remaining_dev // len(SHORTFORM_SOURCES)
     per_source_test = test_size // len(SHORTFORM_SOURCES)
+    if per_source_dev + per_source_test > _POOL_SIZE_PER_SOURCE:
+        raise ValueError(
+            f"на источник нужно {per_source_dev + per_source_test} вопросов, "
+            f"больше фиксированного пула {_POOL_SIZE_PER_SOURCE} — увеличьте _POOL_SIZE_PER_SOURCE"
+        )
 
-    rng = np.random.default_rng(seed)
     shortform_dev, shortform_test = [], []
     for source in SHORTFORM_SOURCES:
-        pool = SHORTFORM_LOADERS[source](n=(per_source_dev + per_source_test) * 3)  # запас на дедупликацию/фильтры
+        rng = np.random.default_rng(seed)  # свой генератор на источник, не завязан на порядок цикла
+        pool = SHORTFORM_LOADERS[source](n=_POOL_SIZE_PER_SOURCE)
         idx = rng.permutation(len(pool))
         pool = [pool[i] for i in idx]
         dev_part, test_part = pool[:per_source_dev], pool[per_source_dev:per_source_dev + per_source_test]
