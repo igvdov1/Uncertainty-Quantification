@@ -7,3 +7,6 @@ __pycache__/
 .pytest_cache/
 *.torch
 *.pt
+*.jsonl
+*.zip
+rag_uncertainty/

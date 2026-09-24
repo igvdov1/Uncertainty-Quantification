@@ -47,13 +47,37 @@ INSTRUCTION_RAG = "Using the context passages provided below, answer the questio
 INSTRUCTION_CB = "Answer the question concisely, using your own knowledge."
 
 
+_CHAT_SENTINEL = "\x00"
+
+
+def _chat_prefix_suffix_ids(tokenizer) -> tuple[list[int], list[int]]:
+    """Токены до и после контента user-сообщения в chat-template модели.
+    Нужно, чтобы обернуть существующую ручную токенизацию по частям (она
+    уже трекает офсеты instruction/passages/question для attention-полей)
+    в правильный chat-формат, не переписывая эту логику с нуля.
+
+    Без этого Instruct-модель (Llama-3.1/Qwen2.5) получает сырой текст без
+    <|start_header_id|>/<|im_start|> разметки, на которой её дообучали
+    распознавать конец ответа — и не останавливается на EOS, а генерирует
+    до MAX_NEW_TOKENS почти во всех случаях (найдено на реальном дампе:
+    514/524 closed_book и 520/524 rag ответов short-form упирались ровно
+    в лимit, обрывая ответ на середине слова)."""
+    rendered = tokenizer.apply_chat_template(
+        [{"role": "user", "content": _CHAT_SENTINEL}],
+        add_generation_prompt=True, tokenize=False,
+    )
+    before, after = rendered.split(_CHAT_SENTINEL)
+    prefix_ids = tokenizer(before, add_special_tokens=False)["input_ids"]
+    suffix_ids = tokenizer(after, add_special_tokens=False)["input_ids"]
+    return prefix_ids, suffix_ids
+
+
 def build_prompt_ids(tokenizer, question: str, passages: list[str] | None) -> tuple[list[int], PromptSpans]:
     def toks(text: str) -> list[int]:
         return tokenizer(text, add_special_tokens=False)["input_ids"]
 
-    ids: list[int] = []
-    if tokenizer.bos_token_id is not None:
-        ids.append(tokenizer.bos_token_id)
+    prefix_ids, suffix_ids = _chat_prefix_suffix_ids(tokenizer)
+    ids: list[int] = list(prefix_ids)
 
     instruction = INSTRUCTION_RAG if passages else INSTRUCTION_CB
     a = len(ids)
@@ -70,6 +94,7 @@ def build_prompt_ids(tokenizer, question: str, passages: list[str] | None) -> tu
     e = len(ids)
     ids += toks(f"\nQuestion: {question}\nAnswer:")
     f = len(ids)
+    ids += suffix_ids
 
     return ids, PromptSpans(instruction=(a, b), passages=passage_spans, question=(e, f))
 
