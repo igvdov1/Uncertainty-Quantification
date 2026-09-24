@@ -22,26 +22,42 @@ from . import bootstrap, correlation, metrics, registry, schema
 TARGETS = ("faithful", "factual")
 
 
-def load_jsonl(path: Path) -> list[dict]:
-    records = []
+def iter_jsonl(path: Path):
+    """Генератор, не список — записи с тяжёлыми полями (hidden_states,
+    attention) не накапливаются в памяти все разом. На реальном дампе
+    (600 записей, несколько ГБ на диске уже даже без attention_by_head)
+    полный список в памяти раздувается в разы против веса на диске
+    из-за оверхеда Python-объектов — на этом падал OOM."""
     with open(path) as f:
         for line in f:
             line = line.strip()
             if line:
-                records.append(json.loads(line))
-    return records
+                yield json.loads(line)
 
 
-def build_signal_table(records: list[dict]):
-    rows = []
-    for r in records:
+def build_signal_table_and_claims(records_iter):
+    """Один проход по records_iter (не список — генератор или список,
+    без разницы, но каждую запись отпускаем сразу после извлечения
+    нужного). Возвращает и таблицу сигналов, и лёгкие данные для
+    claim_level_kendall (token_logprobs + claims, без тяжёлых полей) —
+    отдельного второго прохода по тяжёлым записям больше нет."""
+    rows, qids, claim_data = [], [], []
+    labels_lists: dict[str, list[int]] = {t: [] for t in TARGETS}
+
+    for r in records_iter:
         schema.validate_record(r)
         rows.append(registry.compute_all_signals(r))
+        qids.append(r["qid"])
+        for t in TARGETS:
+            labels_lists[t].append(schema.label(r, t))
+        claim_data.append((r["rag"]["token_logprobs"], r.get("claims", [])))
+        # r больше нигде не удерживается — после этой итерации сборщик
+        # мусора может забрать hidden_states/attention/token_topk и т.д.
+
     names = sorted(rows[0].keys())
     table = {name: np.array([row[name] for row in rows], dtype=float) for name in names}
-    qids = [r["qid"] for r in records]
-    labels = {t: np.array([schema.label(r, t) for r in records]) for t in TARGETS}
-    return table, qids, labels
+    labels_by_target = {t: np.array(v) for t, v in labels_lists.items()}
+    return table, qids, labels_by_target, claim_data
 
 
 def to_risk_scores(table: dict[str, np.ndarray], polarity: dict[str, str]) -> dict[str, np.ndarray]:
@@ -73,13 +89,13 @@ def compute_metrics_table(risk: dict[str, np.ndarray], labels_by_target: dict[st
     return results
 
 
-def claim_level_kendall(records: list[dict], target: str = "factual") -> float:
+def claim_level_kendall(claim_data: list[tuple[list[float], list[dict]]], target: str = "factual") -> float:
     """Демонстрация внутри-инстансного ранжирования (бриф, раздел 6):
-    risk-скор на клейм = средний NLL токенов его спана в rag-ветке."""
+    risk-скор на клейм = средний NLL токенов его спана в rag-ветке.
+    claim_data — лёгкие (token_logprobs, claims) пары из
+    build_signal_table_and_claims, не полные записи с тяжёлыми полями."""
     taus = []
-    for r in records:
-        lp = r["rag"]["token_logprobs"]
-        cl = r.get("claims", [])
+    for lp, cl in claim_data:
         if len(cl) < 2:
             continue
         scores, labels = [], []
@@ -103,8 +119,8 @@ def claim_level_kendall(records: list[dict], target: str = "factual") -> float:
     return float(np.mean(taus)) if taus else float("nan")
 
 
-def run(records: list[dict], n_boot: int = 1000, seed: int = 0) -> dict:
-    table, qids, labels_by_target = build_signal_table(records)
+def run(records_iter, n_boot: int = 1000, seed: int = 0) -> dict:
+    table, qids, labels_by_target, claim_data = build_signal_table_and_claims(records_iter)
     polarity = registry.signal_polarity()
     risk = to_risk_scores(table, polarity)
     metrics_table = compute_metrics_table(risk, labels_by_target)
@@ -129,11 +145,11 @@ def run(records: list[dict], n_boot: int = 1000, seed: int = 0) -> dict:
         }
 
     return {
-        "n_records": len(records),
+        "n_records": len(qids),
         "metrics_table": metrics_table,
         "correlation": {"names": names, "matrix": corr},
         "paired_bootstrap_top2_factual": boot_result,
-        "per_question_kendall_tau_factual_mean": claim_level_kendall(records, target="factual"),
+        "per_question_kendall_tau_factual_mean": claim_level_kendall(claim_data, target="factual"),
     }
 
 
@@ -166,12 +182,12 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.input:
-        records = load_jsonl(args.input)
+        records_iter = iter_jsonl(args.input)  # генератор — не грузит всё в память разом
     else:
         from . import synthetic
-        records = synthetic.generate_synthetic_dataset(n=args.n_synthetic, seed=args.seed)
+        records_iter = synthetic.generate_synthetic_dataset(n=args.n_synthetic, seed=args.seed)
 
-    result = run(records, n_boot=args.n_boot, seed=args.seed)
+    result = run(records_iter, n_boot=args.n_boot, seed=args.seed)
     _print_report(result)
 
 

@@ -58,7 +58,7 @@ def test_metrics_table_populated_for_both_targets(records):
 
 
 def test_correlation_matrix_shape_and_diagonal(records):
-    table, _, _ = run_screener.build_signal_table(records)
+    table, _, _, _ = run_screener.build_signal_table_and_claims(records)
     risk = run_screener.to_risk_scores(table, registry.signal_polarity())
     names, matrix = correlation.spearman_matrix(risk)
     n = len(names)
@@ -70,7 +70,7 @@ def test_correlation_matrix_shape_and_diagonal(records):
 
 
 def test_paired_bootstrap_matches_point_estimate(records):
-    table, _, labels = run_screener.build_signal_table(records)
+    table, _, labels, _ = run_screener.build_signal_table_and_claims(records)
     risk = run_screener.to_risk_scores(table, registry.signal_polarity())
     target = "factual"
     a, b = risk["mean_nll_rag"], risk["p_true_rag"]
@@ -83,13 +83,14 @@ def test_paired_bootstrap_matches_point_estimate(records):
 
 
 def test_per_question_kendall_tau_is_finite(records):
-    tau = run_screener.claim_level_kendall(records, target="factual")
+    _, _, _, claim_data = run_screener.build_signal_table_and_claims(records)
+    tau = run_screener.claim_level_kendall(claim_data, target="factual")
     assert not math.isnan(tau)
     assert -1.0 <= tau <= 1.0
 
 
 def test_calibration_metrics_run_on_probability_like_signal(records):
-    table, _, labels = run_screener.build_signal_table(records)
+    table, _, labels, _ = run_screener.build_signal_table_and_claims(records)
     p_true_rag = table["p_true_rag"]
     y = labels["faithful"]
     b = metrics.brier_score(p_true_rag, y)
