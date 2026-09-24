@@ -73,13 +73,21 @@ class NLIFaithfulnessScorer:
     entail_label: str = "ENTAILMENT"
 
     def score(self, answer: str, passages: list[str]) -> float:
+        """max по пассажам P(entailment), а не "top-1 метка была entailment".
+        Пайплайн по умолчанию отдаёт только argmax-метку — для многотемного
+        long-form ответа против одного узкого пассажа top-1 почти всегда
+        'neutral', даже когда реальная entailment-вероятность заметна
+        (например 0.04, а не 0). Со старым кодом (проверка top-1) это давало
+        alignscore=0.0 систематически на long-form записях — найдено на
+        реальном дампе (dump_smoke20.jsonl), не на синтетике."""
         if not passages:
             return float("nan")
         best = 0.0
         for p in passages:
-            result = self.pipeline(f"{p}", text_pair=answer, truncation=True)[0]
-            if result["label"].upper().startswith(self.entail_label[:3]):
-                best = max(best, result["score"])
+            results = self.pipeline(f"{p}", text_pair=answer, truncation=True, top_k=None)
+            for r in results:
+                if r["label"].upper().startswith(self.entail_label[:3]):
+                    best = max(best, r["score"])
         return best
 
     def label(self, answer: str, passages: list[str], threshold: float = 0.5) -> int:
