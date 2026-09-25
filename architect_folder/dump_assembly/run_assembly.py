@@ -132,7 +132,15 @@ def main() -> None:
     parser.add_argument("--nli-device", default="cpu")
     parser.add_argument("--no-resume", action="store_true",
                          help="не пропускать уже записанные qid в --out, перезаписать файл с нуля")
+    parser.add_argument("--skip-attention-head", action="store_true",
+                         help="не считать attention_by_head — самое тяжёлое поле по RAM/диску "
+                              "(растёт с длиной последовательности, особенно на long-form teacher_force); "
+                              "не нужно для гейта A5/бейзлайнов, понадобится позже для attention-based идей")
     args = parser.parse_args()
+
+    if args.skip_attention_head:
+        generation.INCLUDE_ATTENTION_HEAD = False
+        print("attention_by_head отключён (--skip-attention-head)")
 
     print("Loading question set...")
     questions = build_pilot_question_set(args.franq_dataset_dir, args.dev_size, args.test_size, args.seed)

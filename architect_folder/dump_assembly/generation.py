@@ -28,6 +28,13 @@ N_SAMPLES = 10
 TOPK = 20
 HEAD_LAYERS = [16, 31]  # placeholder, см. dump_schema_v1.md — уточнить под INTRYGUE/ReDeEP
 
+# attention_by_head растёт с длиной последовательности (для long-form
+# teacher_force с ответами 300-400+ токенов — самое тяжёлое поле и по RAM
+# во время расчёта, и по месту на диске в готовом дампе; см. run_assembly.py
+# флаг --skip-attention-head). Поле не нужно для гейта A5/бейзлайнов —
+# понадобится позже, для attention-based идей (B3).
+INCLUDE_ATTENTION_HEAD = True
+
 
 @dataclass
 class PromptSpans:
@@ -142,11 +149,12 @@ def _extract_attention_fields(attn_step_layers: tuple, prompt_len: int, spans: P
                 passage_sums[pidx] += float(row[pos])
 
     head_values = []
-    for layer_idx in HEAD_LAYERS:
-        layer_idx = min(layer_idx, len(attn_step_layers) - 1)
-        layer_attn = attn_step_layers[layer_idx][0]  # (heads, query_len, key_len)
-        per_head_row = layer_attn[:, -1, :].float().cpu().numpy()  # (heads, key_len)
-        head_values.append(per_head_row.tolist())
+    if INCLUDE_ATTENTION_HEAD:
+        for layer_idx in HEAD_LAYERS:
+            layer_idx = min(layer_idx, len(attn_step_layers) - 1)
+            layer_attn = attn_step_layers[layer_idx][0]  # (heads, query_len, key_len)
+            per_head_row = layer_attn[:, -1, :].float().cpu().numpy()  # (heads, key_len)
+            head_values.append(per_head_row.tolist())
 
     return group_sums, passage_sums, head_values
 
@@ -201,7 +209,8 @@ def generate_greedy(model, tokenizer, question: str, passages: list[str] | None,
             attn_by_head.append(h)
         result["attention_by_group"] = attn_by_group
         result["attention_by_passage"] = attn_by_passage
-        result["attention_by_head"] = {"layers": HEAD_LAYERS, "values": attn_by_head}
+        if INCLUDE_ATTENTION_HEAD:
+            result["attention_by_head"] = {"layers": HEAD_LAYERS, "values": attn_by_head}
 
     return result
 
@@ -266,7 +275,8 @@ def teacher_force(model, tokenizer, question: str, passages: list[str] | None, t
             attn_by_head.append(h)
         result["attention_by_group"] = attn_by_group
         result["attention_by_passage"] = attn_by_passage
-        result["attention_by_head"] = {"layers": HEAD_LAYERS, "values": attn_by_head}
+        if INCLUDE_ATTENTION_HEAD:
+            result["attention_by_head"] = {"layers": HEAD_LAYERS, "values": attn_by_head}
 
     return result
 
