@@ -89,6 +89,23 @@ def compute_metrics_table(risk: dict[str, np.ndarray], labels_by_target: dict[st
     return results
 
 
+LEAKAGE_AUROC = 0.99
+
+
+def leakage_suspects(metrics_table: dict) -> list[tuple[str, str, float]]:
+    """Сигналы с AUROC >= 0.99 (или <= 0.01 — идеальный с перевёрнутой
+    полярностью). На реальных данных UQ-сигнал так не разделяет —
+    почти наверняка метка посчитана из этого же сигнала. Так выглядела
+    утечка alignscore -> label_faithful (runner_folder/C1_faithful_label_leakage.md)."""
+    out = []
+    for target, table in metrics_table.items():
+        for name, row in table.items():
+            a = row["auroc"]
+            if not np.isnan(a) and (a >= LEAKAGE_AUROC or a <= 1 - LEAKAGE_AUROC):
+                out.append((target, name, a))
+    return out
+
+
 def claim_level_kendall(claim_data: list[tuple[list[float], list[dict]]], target: str = "factual") -> float:
     """Демонстрация внутри-инстансного ранжирования (бриф, раздел 6):
     risk-скор на клейм = средний NLL токенов его спана в rag-ветке.
@@ -150,6 +167,7 @@ def run(records_iter, n_boot: int = 1000, seed: int = 0) -> dict:
         "correlation": {"names": names, "matrix": corr},
         "paired_bootstrap_top2_factual": boot_result,
         "per_question_kendall_tau_factual_mean": claim_level_kendall(claim_data, target="factual"),
+        "leakage_suspects": leakage_suspects(metrics_table),
     }
 
 
@@ -166,6 +184,10 @@ def _print_report(result: dict) -> None:
         print(f"\nПарный bootstrap, target=factual, {bp['pair'][0]} vs {bp['pair'][1]}:")
         print(f"  diff(AUROC)={bp['point_diff']:+.3f}  95% CI=[{bp['ci_low']:+.3f}, {bp['ci_high']:+.3f}]  "
               f"P(A лучше B)={bp['p_a_better']:.2f}  n_boot={bp['n_boot_valid']}")
+
+    for target, name, a in result["leakage_suspects"]:
+        print(f"\n!!! ПОДОЗРЕНИЕ НА УТЕЧКУ МЕТКИ: target={target}, {name} auroc={a:.3f} — "
+              f"проверьте, не посчитана ли метка из этого сигнала")
 
     tau = result["per_question_kendall_tau_factual_mean"]
     print(f"\nВнутри-инстансное ранжирование клеймов (mean Kendall tau, factual): {tau:.3f}")

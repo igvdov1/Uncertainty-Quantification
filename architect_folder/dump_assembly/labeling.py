@@ -10,9 +10,10 @@ Two-track design (см. A4_dataset.md):
     считаем заново, только парсим их формат. Ответ — их оригинальный
     текст, teacher-forced через нашу модель (generation.teacher_force).
 
-V1: faithfulness через общедоступную NLI-модель (не AlignScore — тот
-отдельный репозиторий, RoBERTa, дообученная специально под faithfulness;
-интеграция — следующий шаг, см. cluster_runbook.md). Factuality для
+Faithfulness short-form: LLM-судья отдельным проходом
+(relabel_faithfulness.py). Раньше метка была порогом той же NLI-модели,
+что пишет сигнал alignscore, — утечка, см.
+runner_folder/C1_faithful_label_leakage.md. Factuality для
 short-form — EM/F1 против gold, не LLM-judge — тоже следующий шаг,
 откалиброванный на 76 вопросах FRANQ (см. A4_dataset.md).
 """
@@ -106,6 +107,10 @@ class NLIFaithfulnessScorer:
         return best
 
     def label(self, answer: str, passages: list[str], threshold: float = 0.5) -> int:
+        """НЕ использовать для label_faithful, пока score() этого же скорера
+        идёт в дамп сигналом alignscore: метка = порог сигнала, AUROC=1.0
+        по построению (runner_folder/C1_faithful_label_leakage.md). Разметка
+        faithful — через LLM-судью, dump_assembly/relabel_faithfulness.py."""
         s = self.score(answer, passages)
         return int(s >= threshold) if s == s else 0  # NaN-safe
 
@@ -153,13 +158,25 @@ def franq_longform_claims(ex: dict) -> list[dict]:
     return claims
 
 
-def franq_longform_answer_labels(claims: list[dict]) -> tuple[int, int]:
-    """Агрегация уровня ответа из клеймов: faithful/factual, если ВСЕ
-    клеймы такие (консервативно — один плохой клейм портит весь ответ,
-    та же логика, что подразумевает бинарный label_faithful/label_factual
-    на уровне записи в dump_schema_v1)."""
+# Порог мягкой агрегации faithful для long-form (runner_folder/C1_faithful_label_leakage.md):
+# строгое AND по ~18 клеймам давало 1 faithful-ответ из 76 — метка вырождена.
+LONGFORM_FAITHFUL_MIN_FRAC = 0.8
+
+
+def franq_longform_answer_labels(claims: list[dict],
+                                 faithful_min_frac: float = LONGFORM_FAITHFUL_MIN_FRAC) -> tuple[int, int]:
+    """Агрегация уровня ответа из клеймов.
+
+    faithful: доля faithful-клеймов >= faithful_min_frac. Раньше было AND
+    (один не-faithful клейм из ~18 портил весь ответ) — на 76 FRANQ это
+    давало 1 позитив из 76, AUROC на такой метке ничего не значит.
+    faithful_min_frac=1.0 воспроизводит старое поведение.
+
+    factual: по-прежнему AND (25/76 позитивов — не вырождено, планку
+    factual из гейта A5 не сдвигаем)."""
     if not claims:
         return 1, 1
-    label_faithful = int(all(c["label_faithful"] == 1 for c in claims))
+    frac_faithful = sum(c["label_faithful"] == 1 for c in claims) / len(claims)
+    label_faithful = int(frac_faithful >= faithful_min_frac)
     label_factual = int(all(c["label_factual"] == 1 for c in claims))
     return label_faithful, label_factual

@@ -105,3 +105,17 @@ def test_run_end_to_end_no_crash_and_reasonable_output(records):
     boot = result["paired_bootstrap_top2_factual"]
     assert boot is not None and "pair" in boot
     assert len(result["correlation"]["names"]) == len(registry.signal_polarity())
+
+
+def test_leakage_suspects_flags_near_perfect_auroc():
+    table = {"faithful": {"alignscore": {"auroc": 1.0}, "len_norm_rag": {"auroc": 0.62},
+                          "inverted": {"auroc": 0.005}, "broken": {"auroc": float("nan")}}}
+    flagged = {name for _, name, _ in run_screener.leakage_suspects(table)}
+    assert flagged == {"alignscore", "inverted"}
+
+
+def test_label_none_fails_with_clear_error(records):
+    r = dict(records[0])
+    r["label_faithful"] = None
+    with pytest.raises(ValueError, match="relabel_faithfulness"):
+        schema.label(r, "faithful")

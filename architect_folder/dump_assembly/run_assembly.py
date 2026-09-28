@@ -78,7 +78,10 @@ def process_one(model, tokenizer, device, q: Question, nli_scorer) -> dict | Non
         claims = [{"cid": f"{q.qid}_c0", "text": rag_fields["answer"],
                    "label_faithful": None, "label_factual": None}]  # заполняется ниже
         label_factual = labeling.factuality_shortform(rag_fields["answer"], q.gold_answers)
-        label_faithful = nli_scorer.label(rag_fields["answer"], passage_texts) if passage_texts else 0
+        # faithful НЕ ставится здесь: порог того же nli_scorer, что ниже пишет
+        # сигнал alignscore, = утечка метки (runner_folder/C1_faithful_label_leakage.md).
+        # Заполняется отдельным проходом LLM-судьи: dump_assembly/relabel_faithfulness.py.
+        label_faithful = None
         claims[0]["label_faithful"] = label_faithful
         claims[0]["label_factual"] = label_factual
 

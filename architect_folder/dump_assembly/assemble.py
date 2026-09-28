@@ -21,7 +21,7 @@ def assemble_record(
     retriever_alt: dict,
     passages_top20_scores: list[float],
     tokenizer_name: str,
-    label_faithful: int,
+    label_faithful: int | None,  # None у short-form до relabel_faithfulness.py
     label_factual: int,
     claims: list[dict],
     signals: dict,

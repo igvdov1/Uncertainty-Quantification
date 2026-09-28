@@ -61,6 +61,11 @@ def label(record: Record, target: str) -> int:
     key = f"label_{target}"
     if key not in record:
         raise KeyError(f"Запись {record.get('qid', '?')}: нет метки {key}")
+    if record[key] is None:
+        raise ValueError(
+            f"Запись {record.get('qid', '?')}: {key}=None — метка не проставлена. "
+            f"Для faithful прогоните dump_assembly.relabel_faithfulness (judge + apply)."
+        )
     return int(record[key])
 
 
