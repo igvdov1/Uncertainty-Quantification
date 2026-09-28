@@ -51,6 +51,11 @@ def _make_samples(rng: np.random.Generator, base_answer: str, quality: float, n:
     return samples, logprobs
 
 
+def _exact_match_ids(samples: list[str]) -> list[int]:
+    first: dict[str, int] = {}
+    return [first.setdefault(s, len(first)) for s in samples]
+
+
 def _make_passages(rng: np.random.Generator, quality: float, k: int = 5):
     top_score = 0.5 + 0.4 * quality + rng.normal(0, 0.05)
     scores = sorted(
@@ -175,6 +180,13 @@ def make_record(rng: np.random.Generator, qid: str, split: str) -> dict:
         },
 
         "claims": claims,
+
+        # как после run_screener --sidecar semantic_clusters.jsonl; на синтетике
+        # "смысл" = точная строка (варианты — разные кластеры)
+        "derived": {"semantic_clusters": {
+            "rag": {"cluster_ids": _exact_match_ids(rag_samples)},
+            "closed_book": {"cluster_ids": _exact_match_ids(cb_samples)},
+        }},
 
         "label_faithful": label_faithful,
         "label_factual": label_factual,

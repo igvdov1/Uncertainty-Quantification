@@ -35,6 +35,28 @@ def iter_jsonl(path: Path):
                 yield json.loads(line)
 
 
+def load_sidecars(paths: list[Path]) -> dict[str, dict]:
+    """qid -> {имя_sidecar: строка}. Сейчас один вид — semantic_clusters
+    (dump_assembly/semantic_clusters.py); имя определяется по полям строки."""
+    by_qid: dict[str, dict] = {}
+    for path in paths:
+        for row in iter_jsonl(path):
+            if "rag" in row and "cluster_ids" in row["rag"]:
+                by_qid.setdefault(row["qid"], {})["semantic_clusters"] = row
+            else:
+                raise ValueError(f"{path}: неизвестный формат sidecar (qid={row.get('qid')})")
+    return by_qid
+
+
+def attach_sidecars(records_iter, by_qid: dict[str, dict]):
+    """Подмешивает sidecar-данные в record["derived"] на лету, не трогая дамп."""
+    for r in records_iter:
+        extra = by_qid.get(r["qid"])
+        if extra:
+            r.setdefault("derived", {}).update(extra)
+        yield r
+
+
 def build_signal_table_and_claims(records_iter):
     """Один проход по records_iter (не список — генератор или список,
     без разницы, но каждую запись отпускаем сразу после извлечения
@@ -201,6 +223,8 @@ def main() -> None:
     parser.add_argument("--n-synthetic", type=int, default=200)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--n-boot", type=int, default=1000)
+    parser.add_argument("--sidecar", type=Path, action="append", default=[],
+                        help="доп. посчитанные поля по qid (напр. semantic_clusters.jsonl); можно несколько раз")
     args = parser.parse_args()
 
     if args.input:
@@ -208,6 +232,9 @@ def main() -> None:
     else:
         from . import synthetic
         records_iter = synthetic.generate_synthetic_dataset(n=args.n_synthetic, seed=args.seed)
+
+    if args.sidecar:
+        records_iter = attach_sidecars(records_iter, load_sidecars(args.sidecar))
 
     result = run(records_iter, n_boot=args.n_boot, seed=args.seed)
     _print_report(result)

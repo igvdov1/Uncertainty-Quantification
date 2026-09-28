@@ -119,3 +119,15 @@ def test_label_none_fails_with_clear_error(records):
     r["label_faithful"] = None
     with pytest.raises(ValueError, match="relabel_faithfulness"):
         schema.label(r, "faithful")
+
+
+def test_sidecar_attaches_semantic_clusters(tmp_path, records):
+    import json
+    stripped = [{k: v for k, v in r.items() if k != "derived"} for r in records[:5]]
+    assert np.isnan(registry.compute_all_signals(stripped[0])["semantic_entropy_rag"])
+    side = tmp_path / "sc.jsonl"
+    side.write_text("".join(json.dumps({"qid": r["qid"], **r["derived"]["semantic_clusters"]}) + "\n"
+                            for r in records[:5]))
+    attached = list(run_screener.attach_sidecars(iter(stripped), run_screener.load_sidecars([side])))
+    vals = registry.compute_all_signals(attached[0])
+    assert not np.isnan(vals["semantic_entropy_rag"]) and not np.isnan(vals["semantic_entropy_discrete_cb"])

@@ -40,6 +40,16 @@ def samples(record: Record, mode: str) -> list[str]:
     return branch(record, mode).get("samples", [])
 
 
+def sample_logprobs(record: Record, mode: str) -> list[list[float]]:
+    return branch(record, mode).get("sample_logprobs", [])
+
+
+def semantic_cluster_ids(record: Record, mode: str) -> list[int]:
+    """Из sidecar dump_assembly/semantic_clusters.py, подмешанного
+    run_screener --sidecar в record["derived"]. Нет — KeyError (-> NaN)."""
+    return record["derived"]["semantic_clusters"][mode]["cluster_ids"]
+
+
 def passages(record: Record) -> list[dict]:
     return record.get("passages", [])
 

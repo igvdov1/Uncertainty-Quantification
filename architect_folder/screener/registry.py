@@ -1,11 +1,9 @@
 """
 Реестр дешёвых бейзлайнов (бриф, раздел 5) — чистые функции над записью
-дампа. Ничего не считает по-настоящему дорого: semantic_entropy здесь —
-лексический прокси (кластеризация точным совпадением нормализованной
-строки), а не bidirectional-entailment версия из semantic_uncertainty/
-LM-Polygraph. Настоящая версия подключается позже через адаптер
-DumpStatCalculator (см. researcher_folder/B0_toolkits.md, раздел 1.2) —
-здесь достаточно, чтобы каркас гонял весь реестр и матрицу на синтетике.
+дампа. Ничего не считает по-настоящему дорого: semantic_entropy берёт готовые
+NLI-кластеры сэмплов из sidecar (dump_assembly/semantic_clusters.py,
+run_screener --sidecar) — без sidecar эти сигналы NaN. lexical_entropy —
+прежний лексический прокси (точное совпадение строк), оставлен для сравнения.
 
 Все сигналы, зависящие от режима (rag/closed_book), кладутся в выходной
 словарь с суффиксом _rag / _cb. Для каждой пары с обоими режимами
@@ -23,6 +21,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
+from scipy.special import logsumexp
 
 from . import schema
 from .schema import Record
@@ -73,11 +72,10 @@ def predictive_entropy(record: Record, mode: str) -> float:
     return float(np.mean(entropies))
 
 
-def semantic_entropy(record: Record, mode: str) -> float:
-    """Прокси: энтропия распределения сэмплов по классам точного
-    совпадения нормализованной строки. Настоящая семантическая энтропия
-    кластеризует по bidirectional NLI-энтейлменту (Kuhn et al., 2023) —
-    подключается позже, см. докстринг модуля."""
+def lexical_entropy(record: Record, mode: str) -> float:
+    """Энтропия распределения сэмплов по классам точного совпадения
+    нормализованной строки. Раньше называлась semantic_entropy (прокси
+    до NLI-версии) — оставлена как дешёвый ориентир для сравнения."""
     smp = schema.samples(record, mode)
     if len(smp) < 2:
         return 0.0
@@ -86,6 +84,38 @@ def semantic_entropy(record: Record, mode: str) -> float:
     n = len(normalized)
     probs = np.array([c / n for c in counts.values()])
     return float(-np.sum(probs * np.log(probs + 1e-12)))
+
+
+def semantic_entropy_discrete(record: Record, mode: str) -> float:
+    """Энтропия частот семантических кластеров — cluster_assignment_entropy
+    у Farquhar et al. 2024 (кластеры: dump_assembly/semantic_clusters.py)."""
+    ids = schema.semantic_cluster_ids(record, mode)
+    if len(ids) < 2:
+        return 0.0
+    counts = np.array(list(Counter(ids).values()), dtype=float)
+    probs = counts / counts.sum()
+    return float(-np.sum(probs * np.log(probs)))
+
+
+def semantic_entropy(record: Record, mode: str) -> float:
+    """Semantic entropy (Kuhn et al. 2023; Farquhar et al. 2024) — как их
+    основная метрика в jlko/semantic_uncertainty: лог-правдоподобие сэмпла =
+    средний логпроб токена, вероятность кластера = logsumexp по его сэмплам,
+    нормированная на все сэмплы (agg='sum_normalized'), энтропия —
+    predictive_entropy_rao: -sum p*log p. Пустые сэмплы (EOS сразу) без
+    логпробов в правдоподобии не участвуют."""
+    ids = schema.semantic_cluster_ids(record, mode)
+    lps = schema.sample_logprobs(record, mode)
+    if len(ids) != len(lps):
+        raise IndexError(f"{record.get('qid', '?')}/{mode}: cluster_ids и sample_logprobs разной длины")
+    pairs = [(c, float(np.mean(lp))) for c, lp in zip(ids, lps) if len(lp) > 0]
+    if len(pairs) < 2:
+        return 0.0
+    cids = np.array([c for c, _ in pairs])
+    loglik = np.array([l for _, l in pairs])
+    log_total = logsumexp(loglik)
+    log_p = np.array([logsumexp(loglik[cids == c]) - log_total for c in np.unique(cids)])
+    return float(-np.sum(np.exp(log_p) * log_p))
 
 
 # ---- сигналы на passages (только общие, без деления rag/cb) ----------
@@ -139,7 +169,9 @@ PER_MODE_SPECS: list[SignalSpec] = [
     SignalSpec("max_nll", max_nll, True, "uncertainty"),
     SignalSpec("len_norm", len_norm_nll, True, "uncertainty"),
     SignalSpec("predictive_entropy", predictive_entropy, True, "uncertainty"),
+    SignalSpec("lexical_entropy", lexical_entropy, True, "uncertainty"),
     SignalSpec("semantic_entropy", semantic_entropy, True, "uncertainty"),
+    SignalSpec("semantic_entropy_discrete", semantic_entropy_discrete, True, "uncertainty"),
     SignalSpec("p_true", p_true, True, "confidence"),
     SignalSpec("verbalized_conf", verbalized_conf, True, "confidence"),
 ]
