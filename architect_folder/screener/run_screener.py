@@ -17,9 +17,10 @@ from pathlib import Path
 
 import numpy as np
 
-from . import bootstrap, correlation, metrics, registry, schema
+from . import bootstrap, correlation, metrics, refusal, registry, schema
 
 TARGETS = ("faithful", "factual")
+EXCLUDED = -1  # метка исключена из оценки (см. --faithful-exclude-refusals)
 
 
 def iter_jsonl(path: Path):
@@ -57,7 +58,7 @@ def attach_sidecars(records_iter, by_qid: dict[str, dict]):
         yield r
 
 
-def build_signal_table_and_claims(records_iter):
+def build_signal_table_and_claims(records_iter, faithful_exclude_refusals: bool = False):
     """Один проход по records_iter (не список — генератор или список,
     без разницы, но каждую запись отпускаем сразу после извлечения
     нужного). Возвращает и таблицу сигналов, и лёгкие данные для
@@ -72,7 +73,11 @@ def build_signal_table_and_claims(records_iter):
         qids.append(r["qid"])
         sources.append(r.get("source", "?"))
         for t in TARGETS:
-            labels_lists[t].append(schema.label(r, t))
+            if (t == "faithful" and faithful_exclude_refusals and r.get("source") != "franq_longform"
+                    and refusal.is_refusal(r["rag"]["answer"])):
+                labels_lists[t].append(EXCLUDED)
+            else:
+                labels_lists[t].append(schema.label(r, t))
         claim_data.append((r["rag"]["token_logprobs"], r.get("claims", [])))
         # r больше нигде не удерживается — после этой итерации сборщик
         # мусора может забрать hidden_states/attention/token_topk и т.д.
@@ -98,7 +103,7 @@ def compute_metrics_table(risk: dict[str, np.ndarray], labels_by_target: dict[st
     for target, labels in labels_by_target.items():
         results[target] = {}
         for name, scores in risk.items():
-            mask = ~np.isnan(scores)
+            mask = ~np.isnan(scores) & (labels != EXCLUDED)
             if mask.sum() < 2 or len(set(labels[mask])) < 2:
                 continue
             s, l = scores[mask], labels[mask]
@@ -178,8 +183,9 @@ def claim_level_kendall(claim_data: list[tuple[list[float], list[dict]]], target
     return float(np.mean(taus)) if taus else float("nan")
 
 
-def run(records_iter, n_boot: int = 1000, seed: int = 0) -> dict:
-    table, qids, labels_by_target, claim_data, sources = build_signal_table_and_claims(records_iter)
+def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusals: bool = False) -> dict:
+    table, qids, labels_by_target, claim_data, sources = build_signal_table_and_claims(
+        records_iter, faithful_exclude_refusals)
     polarity = registry.signal_polarity()
     risk = to_risk_scores(table, polarity)
     metrics_table = compute_metrics_table(risk, labels_by_target)
@@ -194,7 +200,7 @@ def run(records_iter, n_boot: int = 1000, seed: int = 0) -> dict:
     boot_result = None
     if len(ranked) >= 2:
         name_a, name_b = ranked[0][0], ranked[1][0]
-        mask = ~(np.isnan(risk[name_a]) | np.isnan(risk[name_b]))
+        mask = ~(np.isnan(risk[name_a]) | np.isnan(risk[name_b])) & (labels_by_target[target] != EXCLUDED)
         boot_result = {
             "pair": (name_a, name_b),
             **bootstrap.paired_bootstrap(
@@ -264,6 +270,9 @@ def main() -> None:
     parser.add_argument("--n-synthetic", type=int, default=200)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--n-boot", type=int, default=1000)
+    parser.add_argument("--faithful-exclude-refusals", action="store_true",
+                        help="исключить short-form отказы («в пассажах нет информации») из оценки faithful — "
+                             "для dump_pilot_v4, см. screener/refusal.py")
     parser.add_argument("--sidecar", type=Path, action="append", default=[],
                         help="доп. посчитанные поля по qid (напр. semantic_clusters.jsonl); можно несколько раз")
     args = parser.parse_args()
@@ -277,7 +286,8 @@ def main() -> None:
     if args.sidecar:
         records_iter = attach_sidecars(records_iter, load_sidecars(args.sidecar))
 
-    result = run(records_iter, n_boot=args.n_boot, seed=args.seed)
+    result = run(records_iter, n_boot=args.n_boot, seed=args.seed,
+                 faithful_exclude_refusals=args.faithful_exclude_refusals)
     _print_report(result)
 
 

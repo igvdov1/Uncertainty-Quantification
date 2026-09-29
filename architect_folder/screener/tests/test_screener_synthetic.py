@@ -142,3 +142,15 @@ def test_leakage_by_group_catches_leak_hidden_in_overall():
     sig[:60] = -labels[:60] + 0.01 * rng.normal(size=60)     # на short метка = порог сигнала
     flagged = run_screener.leakage_suspects_by_group({"s": sig}, {"faithful": labels}, groups)
     assert [(t, name) for t, name, _ in flagged] == [("faithful@short", "s")]
+
+
+def test_faithful_exclude_refusals_masks_only_faithful(records):
+    recs = [dict(r, rag=dict(r["rag"])) for r in records[:40]]
+    for r in recs[:10]:
+        r["rag"]["answer"] = "The passages do not mention this."
+    _, _, labels, _, _ = run_screener.build_signal_table_and_claims(recs, faithful_exclude_refusals=True)
+    assert (labels["faithful"][:10] == run_screener.EXCLUDED).all()
+    assert (labels["faithful"][10:] != run_screener.EXCLUDED).all()
+    assert (labels["factual"] != run_screener.EXCLUDED).all()
+    table = run_screener.compute_metrics_table({"s": np.arange(40, dtype=float)}, labels)
+    assert table["faithful"]["s"]["n"] == 30 and table["factual"]["s"]["n"] == 40
