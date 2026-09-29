@@ -52,8 +52,11 @@ from pathlib import Path
 from .labeling import LONGFORM_FAITHFUL_MIN_FRAC, franq_longform_answer_labels
 
 LONGFORM_SOURCE = "franq_longform"
-VERDICTS = ("faithful", "unfaithful-contra", "unfaithful-neutral")
-_VERDICT_RE = re.compile(r"VERDICT:\s*\**\s*(faithful|unfaithful-contra|unfaithful-neutral)\b", re.IGNORECASE)
+# abstain — ответ только говорит, что в пассажах нет информации, и это правда.
+# Отдельный вердикт, чтобы политику «верный отказ = faithful?» можно было
+# поменять в apply (--abstain-unfaithful) без повторного прогона судьи.
+VERDICTS = ("faithful", "unfaithful-contra", "unfaithful-neutral", "abstain")
+_VERDICT_RE = re.compile(r"VERDICT:\s*\**\s*(faithful|unfaithful-contra|unfaithful-neutral|abstain)\b", re.IGNORECASE)
 
 SYSTEM_PROMPT = (
     "You are a careful annotator checking whether a statement is grounded in retrieved passages. "
@@ -72,16 +75,18 @@ Classify the statement with respect to the passages:
 - faithful: every factual assertion in the statement is supported by the passages.
 - unfaithful-contra: some assertion in the statement contradicts the passages.
 - unfaithful-neutral: some assertion is neither supported nor contradicted by the passages (not verifiable from them).
+- abstain: the statement only says that the passages do not contain the requested information, and that is true.
 
 Notes:
 - The statement answers the question above. Read a short answer as the full claim it makes in response to the question (e.g. "Paris." to "What is the capital of France?" asserts "The capital of France is Paris").
 - Judge only against the passages, even if you know the statement is true or false in reality.
-- Saying that the passages do not contain the information is not an assertion; judge only the facts the statement actually asserts.
+- If the statement says the passages lack the information but they do contain it, that is unfaithful-contra. If it says so and also asserts other facts, judge those facts (faithful only if they are supported and the passages indeed lack the information).
 - The statement may be cut off mid-sentence; ignore an incomplete trailing fragment.
 - Do not penalize a statement for being incomplete, brief or omitting details: if what it does assert is supported by the passages, it is faithful.
+- Paraphrases, minor wording differences (e.g. "usually" vs "commonly") and direct common-sense implications of the passages count as supported.
 
 Give one or two sentences of reasoning, then a final line exactly in the form:
-VERDICT: <faithful|unfaithful-contra|unfaithful-neutral>"""
+VERDICT: <faithful|unfaithful-contra|unfaithful-neutral|abstain>"""
 
 
 # ---- общие утилиты ---------------------------------------------------
@@ -112,9 +117,11 @@ def parse_verdict(raw: str) -> str | None:
     return matches[-1].lower() if matches else None
 
 
-def verdict_to_label(verdict: str | None) -> int | None:
+def verdict_to_label(verdict: str | None, abstain_faithful: bool = True) -> int | None:
     if verdict is None:
         return None
+    if verdict == "abstain":
+        return int(abstain_faithful)
     return int(verdict == "faithful")
 
 
@@ -255,7 +262,7 @@ def load_judge_labels(path: Path, items: list[dict] | None = None) -> dict[str, 
     want = {it["item_id"]: input_hash(it) for it in items} if items is not None else None
     by_id: dict[str, dict] = {}
     for j in iter_jsonl(path):
-        if want is not None and want.get(j["item_id"]) != j.get("input_hash"):
+        if want is not None and (j["item_id"] not in want or want[j["item_id"]] != j.get("input_hash")):
             continue
         if j["verdict"] is not None or j["item_id"] not in by_id:
             by_id[j["item_id"]] = j
@@ -334,7 +341,8 @@ def cmd_calibrate(args) -> None:
 
 # ---- 4. apply --------------------------------------------------------
 
-def apply_to_record(record: dict, judged: dict[str, dict], min_frac: float) -> tuple[int | None, int | None]:
+def apply_to_record(record: dict, judged: dict[str, dict], min_frac: float,
+                    abstain_faithful: bool = True) -> tuple[int | None, int | None]:
     """Меняет record на месте. Возвращает (старая, новая) label_faithful."""
     old = record.get("label_faithful")
     if record["source"] == LONGFORM_SOURCE:
@@ -345,7 +353,7 @@ def apply_to_record(record: dict, judged: dict[str, dict], min_frac: float) -> t
         if j is None or j["label_faithful"] is None:
             raise KeyError(f"{record['qid']}: нет вердикта судьи — прогоните judge до конца (resume) "
                            f"или проверьте, что judge_input собран из этого же дампа")
-        new = j["label_faithful"]
+        new = verdict_to_label(j["verdict"], abstain_faithful)
         if record.get("claims"):
             record["claims"][0]["label_faithful"] = new
     record["label_faithful"] = new
@@ -360,7 +368,7 @@ def cmd_apply(args) -> None:
         for line in fin:
             r = json.loads(line)
             kind = "long" if r["source"] == LONGFORM_SOURCE else "short"
-            old, new = apply_to_record(r, judged, args.faithful_min_frac)
+            old, new = apply_to_record(r, judged, args.faithful_min_frac, not args.abstain_unfaithful)
             stats[f"{kind}_n"] += 1
             stats[f"{kind}_pos"] += new
             stats[f"{kind}_changed"] += int(old != new)
@@ -423,6 +431,8 @@ def main() -> None:
     p.add_argument("--labels", required=True, type=Path)
     p.add_argument("--out", required=True, type=Path)
     p.add_argument("--faithful-min-frac", type=float, default=LONGFORM_FAITHFUL_MIN_FRAC)
+    p.add_argument("--abstain-unfaithful", action="store_true",
+                   help="верный отказ (verdict=abstain) считать unfaithful; по умолчанию faithful")
     p.set_defaults(fn=cmd_apply)
 
     args = parser.parse_args()

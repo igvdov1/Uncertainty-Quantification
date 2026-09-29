@@ -203,8 +203,16 @@ def run(records_iter, n_boot: int = 1000, seed: int = 0) -> dict:
             ),
         }
 
+    form = np.where(sources == "franq_longform", "long", "short")
+    by_form = {
+        g: compute_metrics_table({k: v[form == g] for k, v in risk.items()},
+                                 {t: l[form == g] for t, l in labels_by_target.items()})
+        for g in ("short", "long") if (form == g).sum() >= LEAKAGE_MIN_GROUP
+    }
+
     return {
         "n_records": len(qids),
+        "metrics_by_form": by_form,
         "metrics_table": metrics_table,
         "correlation": {"names": names, "matrix": corr},
         "paired_bootstrap_top2_factual": boot_result,
@@ -221,6 +229,18 @@ def _print_report(result: dict) -> None:
         for name, row in ranked:
             print(f"  {name:24s} auroc={row['auroc']:.3f}  aurc={row['aurc']:.3f}  "
                   f"prr={row['prr']:.3f}  cov@5%risk={row['coverage_at_5pct_risk']:.3f}  n={row['n']}")
+
+    # По формам отдельно: long-form (76 FRANQ) и short-form различаются и по
+    # длине/NLL, и по базовой частоте меток — AUROC на смеси награждает
+    # сигнал за то, что он отличает long от short.
+    for g, gtable in result.get("metrics_by_form", {}).items():
+        for target, table in gtable.items():
+            ranked = sorted(table.items(), key=lambda kv: kv[1]["auroc"] if not np.isnan(kv[1]["auroc"]) else -1.0,
+                            reverse=True)
+            n = next(iter(table.values()))["n"] if table else 0
+            print(f"\n--- {g}-form, target: {target} (n={n}), топ-12 ---")
+            for name, row in ranked[:12]:
+                print(f"  {name:30s} auroc={row['auroc']:.3f}")
 
     bp = result["paired_bootstrap_top2_factual"]
     if bp:

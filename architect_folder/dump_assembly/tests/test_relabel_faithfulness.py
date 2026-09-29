@@ -184,3 +184,19 @@ def test_franq_longform_claims_uses_full_text():
           "decoded_claims": [" reacts with halogens"], "auto_labels": ['("faithful", "True")']}
     c = labeling.franq_longform_claims(ex)[0]
     assert c["text"] == "Magnesium reacts with halogens." and c["text_decoded"] == " reacts with halogens"
+
+
+def test_load_with_items_ignores_rows_for_other_items(records, tmp_path):
+    items = [it for r in records for it in rf.extract_items(r)]
+    out = tmp_path / "labels.jsonl"
+    out.write_text(json.dumps({"item_id": "stray", "kind": "answer", "verdict": "faithful",
+                               "label_faithful": 1}) + "\n")               # строка без хэша
+    assert "stray" not in rf.load_judge_labels(out, items)
+
+
+def test_abstain_verdict_parsed_and_policy_switchable(records):
+    assert rf.parse_verdict("Passages do not mention it.\nVERDICT: abstain") == "abstain"
+    assert rf.verdict_to_label("abstain") == 1
+    assert rf.verdict_to_label("abstain", abstain_faithful=False) == 0
+    judged = {"nq_1_answer": {"verdict": "abstain", "label_faithful": 1}}
+    assert rf.apply_to_record(records[0], judged, 0.8, abstain_faithful=False)[1] == 0
