@@ -118,6 +118,24 @@ def semantic_entropy(record: Record, mode: str) -> float:
     return float(-np.sum(np.exp(log_p) * log_p))
 
 
+# ---- длина ответа ----------------------------------------------------
+# Не UQ-метод, а конфаунд, который нужно видеть в таблице: на пилоте v3
+# средняя длина сэмплов одна даёт factual AUROC 0.769 на short-form (модель
+# отвечает коротко, когда знает, и многословно, когда нет), а лексическая
+# энтропия коррелирует с ней по Спирмену 0.89. Карточку, которая не
+# обгоняет длину, «живой» считать нельзя.
+
+def answer_len(record: Record, mode: str) -> float:
+    return float(len(schema.token_logprobs(record, mode)))
+
+
+def mean_sample_len(record: Record, mode: str) -> float:
+    lps = schema.sample_logprobs(record, mode)
+    if not lps:
+        raise KeyError(f"{record.get('qid', '?')}/{mode}: нет сэмплов")
+    return float(np.mean([len(lp) for lp in lps]))
+
+
 # ---- сигналы на passages (только общие, без деления rag/cb) ----------
 
 def top1_cos(record: Record) -> float:
@@ -172,6 +190,8 @@ PER_MODE_SPECS: list[SignalSpec] = [
     SignalSpec("lexical_entropy", lexical_entropy, True, "uncertainty"),
     SignalSpec("semantic_entropy", semantic_entropy, True, "uncertainty"),
     SignalSpec("semantic_entropy_discrete", semantic_entropy_discrete, True, "uncertainty"),
+    SignalSpec("answer_len", answer_len, True, "uncertainty"),
+    SignalSpec("mean_sample_len", mean_sample_len, True, "uncertainty"),
     SignalSpec("p_true", p_true, True, "confidence"),
     SignalSpec("verbalized_conf", verbalized_conf, True, "confidence"),
 ]

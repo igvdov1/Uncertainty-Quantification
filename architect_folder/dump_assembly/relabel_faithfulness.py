@@ -10,9 +10,12 @@ faithful / unfaithful-contra / unfaithful-neutral.
 
 Четыре шага, дамп (ГБ) между машинами не возим:
 
-    # 1. локально, CPU: из дампа -> маленький файл с тем, что нужно судье
+    # 1. локально, CPU: из дампа -> маленький файл с тем, что нужно судье.
+    #    --franq-dataset-dir: подставить полный текст клеймов FRANQ вместо
+    #    обрывков decoded_claims, которые лежат в дампах до v4
     python -m dump_assembly.relabel_faithfulness extract \
-        --dump dump_pilot_v3.jsonl --out judge_input.jsonl
+        --dump dump_pilot_v3.jsonl --out judge_input.jsonl \
+        --franq-dataset-dir rag_uncertainty/claim_level/dataset
 
     # 2. на GPU: судья. Resume по item_id — перезапуск продолжает с места обрыва
     python -m dump_assembly.relabel_faithfulness judge \
@@ -25,7 +28,8 @@ faithful / unfaithful-contra / unfaithful-neutral.
 
     # 4. локально: вписать метки в дамп
     python -m dump_assembly.relabel_faithfulness apply \
-        --dump dump_pilot_v3.jsonl --labels judge_labels.jsonl --out dump_pilot_v4.jsonl
+        --dump dump_pilot_v3.jsonl --input judge_input.jsonl --labels judge_labels.jsonl \
+        --out dump_pilot_v4.jsonl
 
 Что судится:
   - short-form: rag.answer целиком против его пассажей (kind="answer");
@@ -38,6 +42,7 @@ faithful / unfaithful-contra / unfaithful-neutral.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -73,6 +78,7 @@ Notes:
 - Judge only against the passages, even if you know the statement is true or false in reality.
 - Saying that the passages do not contain the information is not an assertion; judge only the facts the statement actually asserts.
 - The statement may be cut off mid-sentence; ignore an incomplete trailing fragment.
+- Do not penalize a statement for being incomplete, brief or omitting details: if what it does assert is supported by the passages, it is faithful.
 
 Give one or two sentences of reasoning, then a final line exactly in the form:
 VERDICT: <faithful|unfaithful-contra|unfaithful-neutral>"""
@@ -94,6 +100,12 @@ def build_messages(item: dict) -> list[dict]:
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
 
 
+def input_hash(item: dict) -> str:
+    """Хэш промпта: resume считает item готовым, только если вердикт получен
+    на ровно этом промпте (сменили текст клейма / шаблон — перепросит)."""
+    return hashlib.sha1(json.dumps(build_messages(item), sort_keys=True).encode()).hexdigest()[:16]
+
+
 def parse_verdict(raw: str) -> str | None:
     """Последний VERDICT: в ответе (судья может упомянуть метки в рассуждении)."""
     matches = _VERDICT_RE.findall(raw)
@@ -108,23 +120,42 @@ def verdict_to_label(verdict: str | None) -> int | None:
 
 # ---- 1. extract ------------------------------------------------------
 
-def extract_items(record: dict) -> list[dict]:
+def load_franq_full_claims(dataset_dir: Path, model_file: str) -> dict[str, list[str]]:
+    """qid (franq_lf_{key}) -> полные тексты клеймов FRANQ по индексу;
+    та же нумерация, что в questions.load_franq_longform / cid _c{i}."""
+    with open(Path(dataset_dir) / model_file) as f:
+        data = json.load(f)
+    return {f"franq_lf_{k}": v.get("claims", []) for k, v in data.items() if k.isdigit()}
+
+
+def extract_items(record: dict, full_claims: dict[str, list[str]] | None = None) -> list[dict]:
     passages = [p["text"] for p in record.get("passages", [])]
     base = {"qid": record["qid"], "source": record["source"], "question": record["question"], "passages": passages}
     if record["source"] == LONGFORM_SOURCE:
-        return [
-            {**base, "item_id": c["cid"], "kind": "claim", "text": c["text"], "ref_label_faithful": c["label_faithful"]}
-            for c in record.get("claims", [])
-        ]
+        texts = (full_claims or {}).get(record["qid"])
+        items = []
+        for c in record.get("claims", []):
+            text = c["text"]
+            if texts is not None:
+                text = texts[int(c["cid"].rsplit("_c", 1)[1])]
+            items.append({**base, "item_id": c["cid"], "kind": "claim", "text": text,
+                          "ref_label_faithful": c["label_faithful"]})
+        return items
     return [{**base, "item_id": f"{record['qid']}_answer", "kind": "answer", "text": record["rag"]["answer"],
              "ref_label_faithful": None}]
 
 
 def cmd_extract(args) -> None:
+    full_claims = None
+    if args.franq_dataset_dir:
+        full_claims = load_franq_full_claims(args.franq_dataset_dir, args.franq_model_file)
+    else:
+        print("ВНИМАНИЕ: без --franq-dataset-dir клеймы long-form берутся из дампа как есть "
+              "(в дампах до v4 — обрывки decoded_claims)", file=sys.stderr)
     kinds = Counter()
     with open(args.out, "w") as fout:
         for r in iter_jsonl(args.dump):
-            for item in extract_items(r):
+            for item in extract_items(r, full_claims):
                 if not item["passages"]:
                     # судить не с чем; short-form без пассажей в дампе быть не должно
                     print(f"  {item['item_id']}: нет пассажей, пропускаю", file=sys.stderr)
@@ -185,7 +216,7 @@ def run_judge(items: list[dict], judge, out_path: Path, batch_size: int, file_mo
                 n_unparsed += verdict is None
                 fout.write(json.dumps({
                     "item_id": it["item_id"], "qid": it["qid"], "kind": it["kind"],
-                    "verdict": verdict, "label_faithful": verdict_to_label(verdict), "raw": raw,
+                    "input_hash": input_hash(it), "verdict": verdict, "label_faithful": verdict_to_label(verdict), "raw": raw,
                 }) + "\n")
             fout.flush()
             print(f"  {min(start + batch_size, len(items))}/{len(items)}  (без вердикта: {n_unparsed})")
@@ -199,9 +230,10 @@ def cmd_judge(args) -> None:
         items = items[:args.limit]
     done = set()
     if args.out.exists():
-        # строки без вердикта не считаем сделанными — перезапуск перепросит их
-        done = {j["item_id"] for j in iter_jsonl(args.out) if j["verdict"] is not None}
-    todo = [it for it in items if it["item_id"] not in done]
+        # готово = есть вердикт на ровно этом промпте; строки без вердикта или
+        # от старого промпта/текста перепрашиваются
+        done = {(j["item_id"], j.get("input_hash")) for j in iter_jsonl(args.out) if j["verdict"] is not None}
+    todo = [it for it in items if (it["item_id"], input_hash(it)) not in done]
     print(f"{len(items)} items, {len(done)} уже размечено, к разметке {len(todo)}")
     if not todo:
         return
@@ -215,11 +247,16 @@ def cmd_judge(args) -> None:
 
 # ---- чтение меток судьи ----------------------------------------------
 
-def load_judge_labels(path: Path) -> dict[str, dict]:
+def load_judge_labels(path: Path, items: list[dict] | None = None) -> dict[str, dict]:
     """item_id -> последняя строка с вердиктом (resume может дописать
-    повторную попытку для item, у которого раньше вердикта не было)."""
+    повторную попытку для item, у которого раньше вердикта не было).
+    С items — берутся только строки, посчитанные на текущем промпте этих
+    items (в файле могут остаться вердикты от старого промпта)."""
+    want = {it["item_id"]: input_hash(it) for it in items} if items is not None else None
     by_id: dict[str, dict] = {}
     for j in iter_jsonl(path):
+        if want is not None and want.get(j["item_id"]) != j.get("input_hash"):
+            continue
         if j["verdict"] is not None or j["item_id"] not in by_id:
             by_id[j["item_id"]] = j
     return by_id
@@ -285,7 +322,7 @@ def calibration_report(items: list[dict], judged: dict[str, dict],
 
 def cmd_calibrate(args) -> None:
     items = list(iter_jsonl(args.input))
-    rep = calibration_report(items, load_judge_labels(args.labels))
+    rep = calibration_report(items, load_judge_labels(args.labels, items))
     print(json.dumps(rep, indent=2, ensure_ascii=False))
     kappa = rep["cohen_kappa"]
     if not kappa == kappa or kappa < args.min_kappa:
@@ -316,7 +353,7 @@ def apply_to_record(record: dict, judged: dict[str, dict], min_frac: float) -> t
 
 
 def cmd_apply(args) -> None:
-    judged = load_judge_labels(args.labels)
+    judged = load_judge_labels(args.labels, list(iter_jsonl(args.input)))
     stats = Counter()
     align, labels_short = [], []
     with open(args.dump) as fin, open(args.out, "w") as fout:
@@ -354,6 +391,10 @@ def main() -> None:
     p = sub.add_parser("extract")
     p.add_argument("--dump", required=True, type=Path)
     p.add_argument("--out", required=True, type=Path)
+    p.add_argument("--franq-dataset-dir", type=Path, default=None,
+                   help="rag_uncertainty/claim_level/dataset — полный текст клеймов long-form")
+    p.add_argument("--franq-model-file", default="Falcon3-3B-Base.json",
+                   help="тот же файл, что в questions.load_franq_longform")
     p.set_defaults(fn=cmd_extract)
 
     p = sub.add_parser("judge")
@@ -378,6 +419,7 @@ def main() -> None:
 
     p = sub.add_parser("apply")
     p.add_argument("--dump", required=True, type=Path)
+    p.add_argument("--input", required=True, type=Path, help="judge_input.jsonl, по которому судили")
     p.add_argument("--labels", required=True, type=Path)
     p.add_argument("--out", required=True, type=Path)
     p.add_argument("--faithful-min-frac", type=float, default=LONGFORM_FAITHFUL_MIN_FRAC)

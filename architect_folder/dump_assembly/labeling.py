@@ -147,13 +147,21 @@ def franq_longform_claims(ex: dict) -> list[dict]:
     он у FRANQ per-claim не выровнен на наши токены; наш teacher_force
     токенизирует их текст заново, спаны клеймов на нём не совпадают
     один-в-один с их span-разметкой — известное ограничение V1, чинится
-    выравниванием текста клейма на новые токены при необходимости)."""
+    выравниванием текста клейма на новые токены при необходимости).
+
+    text — полное предложение клейма (FRANQ `claims`), text_decoded —
+    их токен-выровненный обрывок (`decoded_claims`, напр. " reacts with
+    halogens to form halides" вместо "Magnesium reacts with halogens to
+    form halides."). Раньше в text шёл обрывок — LLM-судья на нём
+    систематически ставил unfaithful-neutral за неполноту."""
+    full = ex.get("claims") or ex.get("decoded_claims", [])
+    decoded = ex.get("decoded_claims") or full
     claims = []
-    for i, text in enumerate(ex.get("decoded_claims", ex.get("claims", []))):
+    for i, text in enumerate(full):
         lf, lfact = parse_franq_auto_label(ex["auto_labels"][i])
         if lf is None:
             continue
-        claims.append({"cid": f"{ex.get('_qid', '?')}_c{i}", "text": text,
+        claims.append({"cid": f"{ex.get('_qid', '?')}_c{i}", "text": text, "text_decoded": decoded[i],
                         "label_faithful": lf, "label_factual": lfact})
     return claims
 

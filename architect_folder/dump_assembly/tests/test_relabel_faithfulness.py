@@ -147,3 +147,40 @@ def test_longform_aggregation_strict_mode_reproduces_old_and():
     claims = [{"label_faithful": l, "label_factual": 1} for l in [1] * 9 + [0]]
     assert labeling.franq_longform_answer_labels(claims, faithful_min_frac=1.0) == (0, 1)
     assert labeling.franq_longform_answer_labels(claims) == (1, 1)
+
+
+def test_extract_substitutes_full_franq_claims(records):
+    full = {"franq_lf_0": [f"Full sentence {i}." for i in range(10)]}
+    items = rf.extract_items(records[2], full)
+    assert [it["text"] for it in items][:2] == ["Full sentence 0.", "Full sentence 1."]
+    assert rf.extract_items(records[3], full)[0]["text"] == "claim 0"      # нет в словаре -> как в дампе
+
+
+def test_resume_reasks_items_judged_on_old_prompt(records, tmp_path):
+    items = [it for r in records for it in rf.extract_items(r)]
+    inp, out = tmp_path / "in.jsonl", tmp_path / "labels.jsonl"
+    rf.run_judge(items, MockJudge(), out, batch_size=4)             # все размечены на старом тексте
+    changed = [dict(it, text="Paris.") if it["item_id"] == "nq_2_answer" else it for it in items]
+    inp.write_text("".join(json.dumps(it) + "\n" for it in changed))
+
+    judge = MockJudge()
+    args = type("A", (), dict(input=inp, out=out, only_kind=None, limit=None, backend="hf",
+                              model="x", dtype="bfloat16", max_new_tokens=8, batch_size=4))()
+    import dump_assembly.relabel_faithfulness as mod
+    orig = mod.HFJudge
+    mod.HFJudge = lambda *a, **k: judge
+    try:
+        rf.cmd_judge(args)
+    finally:
+        mod.HFJudge = orig
+    assert judge.calls == 1                                          # перепрошен только изменённый
+    fresh = rf.load_judge_labels(out, changed)
+    assert fresh["nq_2_answer"]["label_faithful"] == 1               # новый вердикт, не старый contra
+    assert rf.load_judge_labels(out)["nq_2_answer"]["label_faithful"] == 1
+
+
+def test_franq_longform_claims_uses_full_text():
+    ex = {"_qid": "franq_lf_7", "claims": ["Magnesium reacts with halogens."],
+          "decoded_claims": [" reacts with halogens"], "auto_labels": ['("faithful", "True")']}
+    c = labeling.franq_longform_claims(ex)[0]
+    assert c["text"] == "Magnesium reacts with halogens." and c["text_decoded"] == " reacts with halogens"

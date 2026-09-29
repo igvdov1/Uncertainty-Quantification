@@ -63,13 +63,14 @@ def build_signal_table_and_claims(records_iter):
     нужного). Возвращает и таблицу сигналов, и лёгкие данные для
     claim_level_kendall (token_logprobs + claims, без тяжёлых полей) —
     отдельного второго прохода по тяжёлым записям больше нет."""
-    rows, qids, claim_data = [], [], []
+    rows, qids, claim_data, sources = [], [], [], []
     labels_lists: dict[str, list[int]] = {t: [] for t in TARGETS}
 
     for r in records_iter:
         schema.validate_record(r)
         rows.append(registry.compute_all_signals(r))
         qids.append(r["qid"])
+        sources.append(r.get("source", "?"))
         for t in TARGETS:
             labels_lists[t].append(schema.label(r, t))
         claim_data.append((r["rag"]["token_logprobs"], r.get("claims", [])))
@@ -79,7 +80,7 @@ def build_signal_table_and_claims(records_iter):
     names = sorted(rows[0].keys())
     table = {name: np.array([row[name] for row in rows], dtype=float) for name in names}
     labels_by_target = {t: np.array(v) for t, v in labels_lists.items()}
-    return table, qids, labels_by_target, claim_data
+    return table, qids, labels_by_target, claim_data, np.array(sources)
 
 
 def to_risk_scores(table: dict[str, np.ndarray], polarity: dict[str, str]) -> dict[str, np.ndarray]:
@@ -114,6 +115,9 @@ def compute_metrics_table(risk: dict[str, np.ndarray], labels_by_target: dict[st
 LEAKAGE_AUROC = 0.99
 
 
+LEAKAGE_MIN_GROUP = 30
+
+
 def leakage_suspects(metrics_table: dict) -> list[tuple[str, str, float]]:
     """Сигналы с AUROC >= 0.99 (или <= 0.01 — идеальный с перевёрнутой
     полярностью). На реальных данных UQ-сигнал так не разделяет —
@@ -125,6 +129,22 @@ def leakage_suspects(metrics_table: dict) -> list[tuple[str, str, float]]:
             a = row["auroc"]
             if not np.isnan(a) and (a >= LEAKAGE_AUROC or a <= 1 - LEAKAGE_AUROC):
                 out.append((target, name, a))
+    return out
+
+
+def leakage_suspects_by_group(risk: dict[str, np.ndarray], labels_by_target: dict[str, np.ndarray],
+                              groups: np.ndarray) -> list[tuple[str, str, float]]:
+    """То же внутри каждой группы (source). Утечка alignscore была видна
+    только так: на short-form AUROC=1.000, а на всём дампе 0.859 — общий
+    порог её не ловил."""
+    out = []
+    for g in np.unique(groups):
+        m = groups == g
+        if m.sum() < LEAKAGE_MIN_GROUP:
+            continue
+        table = compute_metrics_table({k: v[m] for k, v in risk.items()},
+                                      {t: l[m] for t, l in labels_by_target.items()})
+        out.extend((f"{t}@{g}", name, a) for t, name, a in leakage_suspects(table))
     return out
 
 
@@ -159,7 +179,7 @@ def claim_level_kendall(claim_data: list[tuple[list[float], list[dict]]], target
 
 
 def run(records_iter, n_boot: int = 1000, seed: int = 0) -> dict:
-    table, qids, labels_by_target, claim_data = build_signal_table_and_claims(records_iter)
+    table, qids, labels_by_target, claim_data, sources = build_signal_table_and_claims(records_iter)
     polarity = registry.signal_polarity()
     risk = to_risk_scores(table, polarity)
     metrics_table = compute_metrics_table(risk, labels_by_target)
@@ -189,7 +209,8 @@ def run(records_iter, n_boot: int = 1000, seed: int = 0) -> dict:
         "correlation": {"names": names, "matrix": corr},
         "paired_bootstrap_top2_factual": boot_result,
         "per_question_kendall_tau_factual_mean": claim_level_kendall(claim_data, target="factual"),
-        "leakage_suspects": leakage_suspects(metrics_table),
+        "leakage_suspects": leakage_suspects(metrics_table)
+                            + leakage_suspects_by_group(risk, labels_by_target, sources),
     }
 
 
