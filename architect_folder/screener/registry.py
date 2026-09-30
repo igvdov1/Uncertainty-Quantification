@@ -174,6 +174,18 @@ def alignscore(record: Record) -> float:
     return float(schema.signals(record)["alignscore"])
 
 
+# ---- карточки банка B из sidecar (dump_assembly/gpu_cards.py) --------------
+
+def _derived(name: str) -> Callable:
+    def fn(record: Record) -> float:
+        v = schema.derived_signal(record, name)
+        if v is None:
+            raise KeyError(name)
+        return float(v)
+    fn.__name__ = name
+    return fn
+
+
 @dataclass
 class SignalSpec:
     name: str
@@ -203,6 +215,21 @@ SHARED_SPECS: list[SignalSpec] = [
     SignalSpec("alignscore", alignscore, False, "confidence"),
 ]
 
+# card id (B2_cards.md) -> сигналы; без sidecar — NaN
+CARD_SPECS: list[SignalSpec] = [
+    # selfcheckgpt-consistency
+    SignalSpec("selfcheck_nli_rag", _derived("selfcheck_nli_rag"), False, "uncertainty"),
+    SignalSpec("selfcheck_nli_cb", _derived("selfcheck_nli_cb"), False, "uncertainty"),
+    # non-contradiction-probability
+    SignalSpec("ncp_rag", _derived("ncp_rag"), False, "confidence"),
+    SignalSpec("ncp_cb", _derived("ncp_cb"), False, "confidence"),
+    SignalSpec("ncp_cross", _derived("ncp_cross"), False, "confidence"),
+    # lettucedetect-lightweight
+    SignalSpec("lettuce_max", _derived("lettuce_max"), False, "uncertainty"),
+    SignalSpec("lettuce_mean", _derived("lettuce_mean"), False, "uncertainty"),
+    SignalSpec("lettuce_frac", _derived("lettuce_frac"), False, "uncertainty"),
+]
+
 
 def compute_all_signals(record: Record) -> dict[str, float]:
     """Считает весь реестр для одной записи: per-mode сигналы (с суффиксами
@@ -226,7 +253,7 @@ def compute_all_signals(record: Record) -> dict[str, float]:
         else:
             out[f"uplift_{spec.name}"] = float("nan")
 
-    for spec in SHARED_SPECS:
+    for spec in SHARED_SPECS + CARD_SPECS:
         try:
             out[spec.name] = spec.fn(record)
         except _SKIP:
@@ -244,6 +271,6 @@ def signal_polarity() -> dict[str, str]:
         for suffix in MODE_SUFFIX.values():
             polarity[f"{spec.name}_{suffix}"] = spec.polarity
         polarity[f"uplift_{spec.name}"] = spec.polarity
-    for spec in SHARED_SPECS:
+    for spec in SHARED_SPECS + CARD_SPECS:
         polarity[spec.name] = spec.polarity
     return polarity

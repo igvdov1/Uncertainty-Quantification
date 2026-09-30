@@ -186,7 +186,19 @@ def make_record(rng: np.random.Generator, qid: str, split: str) -> dict:
         "derived": {"semantic_clusters": {
             "rag": {"cluster_ids": _exact_match_ids(rag_samples)},
             "closed_book": {"cluster_ids": _exact_match_ids(cb_samples)},
-        }},
+        },
+            # как после --sidecar gpu_cards.jsonl (dump_assembly/gpu_cards.py)
+            "signals": {
+                "selfcheck_nli_rag": float(np.clip(1 - quality + rng.normal(0, 0.1), 0, 1)),
+                "selfcheck_nli_cb": float(np.clip(1 - cb_quality + rng.normal(0, 0.1), 0, 1)),
+                "ncp_rag": float(np.clip(quality + rng.normal(0, 0.1), 0, 1)),
+                "ncp_cb": float(np.clip(cb_quality + rng.normal(0, 0.1), 0, 1)),
+                "ncp_cross": float(np.clip((quality + cb_quality) / 2 + rng.normal(0, 0.1), 0, 1)),
+                "lettuce_max": float(np.clip(1 - quality + rng.normal(0, 0.1), 0, 1)),
+                "lettuce_mean": float(np.clip(0.5 * (1 - quality) + rng.normal(0, 0.05), 0, 1)),
+                "lettuce_frac": float(np.clip(0.5 * (1 - quality) + rng.normal(0, 0.05), 0, 1)),
+            },
+        },
 
         "label_faithful": label_faithful,
         "label_factual": label_factual,

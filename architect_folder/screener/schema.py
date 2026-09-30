@@ -50,6 +50,11 @@ def semantic_cluster_ids(record: Record, mode: str) -> list[int]:
     return record["derived"]["semantic_clusters"][mode]["cluster_ids"]
 
 
+def derived_signal(record: Record, name: str) -> float:
+    """Готовый скаляр карточки из sidecar (run_screener --sidecar gpu_cards.jsonl)."""
+    return record["derived"]["signals"][name]
+
+
 def passages(record: Record) -> list[dict]:
     return record.get("passages", [])
 

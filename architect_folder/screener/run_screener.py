@@ -37,13 +37,17 @@ def iter_jsonl(path: Path):
 
 
 def load_sidecars(paths: list[Path]) -> dict[str, dict]:
-    """qid -> {имя_sidecar: строка}. Сейчас один вид — semantic_clusters
-    (dump_assembly/semantic_clusters.py); имя определяется по полям строки."""
+    """qid -> {имя_sidecar: строка}. Виды (по полям строки): semantic_clusters
+    (dump_assembly/semantic_clusters.py) и signals — готовые скаляры карточек
+    (dump_assembly/gpu_cards.py)."""
     by_qid: dict[str, dict] = {}
     for path in paths:
         for row in iter_jsonl(path):
             if "rag" in row and "cluster_ids" in row["rag"]:
                 by_qid.setdefault(row["qid"], {})["semantic_clusters"] = row
+            elif "signals" in row:
+                # скаляры карточек (dump_assembly/gpu_cards.py); несколько файлов сливаются
+                by_qid.setdefault(row["qid"], {}).setdefault("signals", {}).update(row["signals"])
             else:
                 raise ValueError(f"{path}: неизвестный формат sidecar (qid={row.get('qid')})")
     return by_qid
