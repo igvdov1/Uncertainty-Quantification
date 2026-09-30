@@ -55,5 +55,6 @@ def test_card_signals_and_screener_sidecar(tmp_path):
     side.write_text(json.dumps({"qid": "q1", "models": {}, "signals": sig}) + "\n")
     by_qid = run_screener.load_sidecars([side])
     r = next(run_screener.attach_sidecars(iter([{"qid": "q1"}]), by_qid))
-    assert registry.CARD_SPECS[0].fn(r) == sig["selfcheck_nli_rag"]
+    spec = next(s for s in registry.CARD_SPECS if s.name == "selfcheck_nli_rag")
+    assert spec.fn(r) == sig["selfcheck_nli_rag"]
     assert registry.signal_polarity()["ncp_rag"] == "confidence"

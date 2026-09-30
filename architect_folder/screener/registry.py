@@ -174,6 +174,114 @@ def alignscore(record: Record) -> float:
     return float(schema.signals(record)["alignscore"])
 
 
+# ---- бесплатные карточки банка B (researcher_folder/B2_cards.md) -----------
+# Всё — прямо по полям дампа, ноль генераций и моделей.
+
+def nll_ratio(record: Record) -> float:
+    """uplift-contrast-baseline, вариант «отношение»: len_norm_rag / len_norm_cb
+    (разность — это uplift_len_norm, считается в compute_all_signals)."""
+    cb = len_norm_nll(record, "closed_book")
+    if cb == 0:
+        raise ZeroDivisionError
+    return len_norm_nll(record, "rag") / cb
+
+
+def _context_share(record: Record) -> np.ndarray:
+    """attention-context-ratio: доля внимания текущей позиции на контекст по
+    токенам ответа. attention_by_group = [instruction, context, question,
+    generated] (generation._group_for_position), последний слой, среднее по
+    головам."""
+    g = np.asarray(record["rag"]["attention_by_group"], dtype=float)
+    if g.ndim != 2 or g.shape[1] != 4 or len(g) == 0:
+        raise KeyError("attention_by_group")
+    return g[:, 1] / np.clip(g.sum(axis=1), 1e-12, None)
+
+
+def attn_ctx_mean(record: Record) -> float:
+    return float(_context_share(record).mean())
+
+
+def attn_ctx_min(record: Record) -> float:
+    """Самая «оторванная от контекста» позиция ответа — галлюцинация локальна."""
+    return float(_context_share(record).min())
+
+
+def attn_ctx_vs_param(record: Record) -> float:
+    """Контекст против параметрической части промпта (инструкция + вопрос),
+    без учёта уже сгенерированного: среднее log(ctx / (instr + question))."""
+    g = np.asarray(record["rag"]["attention_by_group"], dtype=float)
+    return float(np.mean(np.log((g[:, 1] + 1e-6) / (g[:, 0] + g[:, 2] + 1e-6))))
+
+
+def _dense_scores(record: Record) -> np.ndarray:
+    s = np.asarray(schema.passages_top20_scores(record), dtype=float)
+    # long-form FRANQ: пассажи не из ретривера, скоры — нули-заглушки
+    if len(s) < 2 or not np.any(s):
+        raise KeyError("нет скоров ретривера")
+    return np.sort(s)[::-1]
+
+
+def qpp_nqc(record: Record) -> float:
+    """score-distribution-qpp: NQC (Shtok et al.) = std(top-k) / |mean(top-k)|
+    — без скора всего корпуса нормируем на среднее топа. В дампе топ-5, не 20."""
+    s = _dense_scores(record)
+    return float(s.std() / abs(s.mean()))
+
+
+def qpp_top1_tail(record: Record) -> float:
+    """score-distribution-qpp: отношение первого скора к среднему хвоста."""
+    s = _dense_scores(record)
+    return float(s[0] / s[1:].mean())
+
+
+def _ids(ids) -> list[str]:
+    return [str(i) for i in ids]
+
+
+def _jaccard(a: list[str], b: list[str]) -> float:
+    a, b = set(a), set(b)
+    if not a or not b:
+        raise KeyError("пустой топ")
+    return len(a & b) / len(a | b)
+
+
+def retriever_agree_jaccard(record: Record) -> float:
+    """retriever-disagreement: пересечение топа dense и BM25 (выше = согласнее)."""
+    dense = _ids(p["doc_id"] for p in schema.passages(record))
+    bm25 = _ids(record["perturbations"]["retriever_alt"]["bm25"]["topk_doc_ids"])
+    return _jaccard(dense, bm25)
+
+
+def retriever_agree_top1(record: Record) -> float:
+    """retriever-disagreement: топ-1 каждого ретривера есть в топе другого (среднее из двух)."""
+    dense = _ids(p["doc_id"] for p in schema.passages(record))
+    bm25 = _ids(record["perturbations"]["retriever_alt"]["bm25"]["topk_doc_ids"])
+    if not dense or not bm25:
+        raise KeyError("пустой топ")
+    return float(((dense[0] in bm25) + (bm25[0] in dense)) / 2)
+
+
+def _paraphrase_jaccards(record: Record) -> list[float]:
+    orig = _ids(p["doc_id"] for p in schema.passages(record))
+    out = []
+    for para in record.get("perturbations", {}).get("query_paraphrases", []):
+        ids = _ids(para.get("topk_doc_ids", []))
+        if ids and orig:
+            out.append(_jaccard(orig, ids))
+    if not out:
+        raise KeyError("нет ретривала по перефразам")
+    return out
+
+
+def para_rank_stability_mean(record: Record) -> float:
+    """paraphrase-rank-stability: среднее пересечение топа оригинала и перефраза."""
+    return float(np.mean(_paraphrase_jaccards(record)))
+
+
+def para_rank_stability_min(record: Record) -> float:
+    return float(np.min(_paraphrase_jaccards(record)))
+
+
 # ---- карточки банка B из sidecar (dump_assembly/gpu_cards.py) --------------
 
 def _derived(name: str) -> Callable:
@@ -215,8 +323,26 @@ SHARED_SPECS: list[SignalSpec] = [
     SignalSpec("alignscore", alignscore, False, "confidence"),
 ]
 
+FREE_CARD_SPECS: list[SignalSpec] = [
+    # uplift-contrast-baseline (разность — uplift_len_norm)
+    SignalSpec("nll_ratio", nll_ratio, False, "uncertainty"),
+    # attention-context-ratio
+    SignalSpec("attn_ctx_mean", attn_ctx_mean, False, "confidence"),
+    SignalSpec("attn_ctx_min", attn_ctx_min, False, "confidence"),
+    SignalSpec("attn_ctx_vs_param", attn_ctx_vs_param, False, "confidence"),
+    # score-distribution-qpp
+    SignalSpec("qpp_nqc", qpp_nqc, False, "confidence"),
+    SignalSpec("qpp_top1_tail", qpp_top1_tail, False, "confidence"),
+    # retriever-disagreement
+    SignalSpec("retriever_agree_jaccard", retriever_agree_jaccard, False, "confidence"),
+    SignalSpec("retriever_agree_top1", retriever_agree_top1, False, "confidence"),
+    # paraphrase-rank-stability
+    SignalSpec("para_rank_stability_mean", para_rank_stability_mean, False, "confidence"),
+    SignalSpec("para_rank_stability_min", para_rank_stability_min, False, "confidence"),
+]
+
 # card id (B2_cards.md) -> сигналы; без sidecar — NaN
-CARD_SPECS: list[SignalSpec] = [
+CARD_SPECS: list[SignalSpec] = FREE_CARD_SPECS + [
     # selfcheckgpt-consistency
     SignalSpec("selfcheck_nli_rag", _derived("selfcheck_nli_rag"), False, "uncertainty"),
     SignalSpec("selfcheck_nli_cb", _derived("selfcheck_nli_cb"), False, "uncertainty"),
@@ -224,6 +350,13 @@ CARD_SPECS: list[SignalSpec] = [
     SignalSpec("ncp_rag", _derived("ncp_rag"), False, "confidence"),
     SignalSpec("ncp_cb", _derived("ncp_cb"), False, "confidence"),
     SignalSpec("ncp_cross", _derived("ncp_cross"), False, "confidence"),
+    # density-based-dev-embeddings (dump_assembly/local_cards.py, только test)
+    SignalSpec("md_rag", _derived("md_rag"), False, "uncertainty"),
+    SignalSpec("md_cb", _derived("md_cb"), False, "uncertainty"),
+    SignalSpec("md_diff", _derived("md_diff"), False, "uncertainty"),
+    # semantic-entropy-probes (dump_assembly/local_cards.py, только test)
+    SignalSpec("sep_rag", _derived("sep_rag"), False, "uncertainty"),
+    SignalSpec("sep_cb", _derived("sep_cb"), False, "uncertainty"),
     # lettucedetect-lightweight
     SignalSpec("lettuce_max", _derived("lettuce_max"), False, "uncertainty"),
     SignalSpec("lettuce_mean", _derived("lettuce_mean"), False, "uncertainty"),

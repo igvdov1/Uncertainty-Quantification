@@ -197,6 +197,11 @@ def make_record(rng: np.random.Generator, qid: str, split: str) -> dict:
                 "lettuce_max": float(np.clip(1 - quality + rng.normal(0, 0.1), 0, 1)),
                 "lettuce_mean": float(np.clip(0.5 * (1 - quality) + rng.normal(0, 0.05), 0, 1)),
                 "lettuce_frac": float(np.clip(0.5 * (1 - quality) + rng.normal(0, 0.05), 0, 1)),
+                "md_rag": float(3 + 2 * (1 - quality) + rng.normal(0, 0.3)),
+                "md_cb": float(3 + 2 * (1 - cb_quality) + rng.normal(0, 0.3)),
+                "md_diff": float(2 * (cb_quality - quality) + rng.normal(0, 0.3)),
+                "sep_rag": float(np.clip(1 - quality + rng.normal(0, 0.1), 0, 1)),
+                "sep_cb": float(np.clip(1 - cb_quality + rng.normal(0, 0.1), 0, 1)),
             },
         },
 

@@ -26,13 +26,49 @@ from . import bootstrap, metrics
 
 ALIVE_DELTA, ALIVE_P, POOL_DELTA, POOL_CORR = 0.02, 0.9, -0.03, 0.5
 
-# card id -> [(сигнал, ветка линейки)]
+# card id -> [(сигнал, ветка линейки)]. Сигналы ретривера и контекста — против rag-NLL.
 CARDS: dict[str, list[tuple[str, str]]] = {
+    "uplift-contrast-baseline": [("uplift_len_norm", "rag"), ("nll_ratio", "rag")],
+    "attention-context-ratio": [("attn_ctx_mean", "rag"), ("attn_ctx_min", "rag"), ("attn_ctx_vs_param", "rag")],
+    "score-distribution-qpp": [("qpp_nqc", "rag"), ("qpp_top1_tail", "rag"), ("top1_cos", "rag"),
+                               ("margin_12", "rag")],
+    "retriever-disagreement": [("retriever_agree_jaccard", "rag"), ("retriever_agree_top1", "rag")],
+    "paraphrase-rank-stability": [("para_rank_stability_mean", "rag"), ("para_rank_stability_min", "rag")],
+    "density-based-dev-embeddings": [("md_rag", "rag"), ("md_cb", "cb"), ("md_diff", "rag")],
+    "semantic-entropy-probes": [("sep_rag", "rag"), ("sep_cb", "cb")],
     "semantic-entropy (бейзлайн брифа)": [("semantic_entropy_rag", "rag"), ("semantic_entropy_cb", "cb")],
     "selfcheckgpt-consistency": [("selfcheck_nli_rag", "rag"), ("selfcheck_nli_cb", "cb")],
     "non-contradiction-probability": [("ncp_rag", "rag"), ("ncp_cb", "cb"), ("ncp_cross", "rag")],
     "lettucedetect-lightweight": [("lettuce_max", "rag"), ("lettuce_mean", "rag"), ("lettuce_frac", "rag")],
 }
+
+
+# Собственные критерии убийства карточек из B2 (корреляционные):
+# card -> [(сигнал карточки, другой сигнал, порог |ρ|, что значит превышение)]
+KILL_CHECKS: dict[str, list[tuple[str, str, float, str]]] = {
+    "paraphrase-rank-stability": [("para_rank_stability_mean", "qpp_nqc", 0.8, "дублирует форму скоров")],
+    "retriever-disagreement": [("retriever_agree_jaccard", "qpp_nqc", 0.7, "дублирует форму скоров")],
+    "density-based-dev-embeddings": [("md_rag", "answer_len_rag", 0.6, "мерит длину"),
+                                     ("md_rag", "mean_sample_len_rag", 0.6, "мерит длину")],
+    "semantic-entropy-probes": [("sep_rag", "semantic_entropy_rag", -0.7, "проба не держит SE (ρ ниже порога)"),
+                                ("sep_cb", "semantic_entropy_cb", -0.7, "проба не держит SE (ρ ниже порога)")],
+}
+
+
+def kill_checks(risk: dict[str, np.ndarray], form_mask: np.ndarray) -> dict[str, list[dict]]:
+    """Порог > 0: убивает |ρ| выше порога; порог < 0: убивает ρ ниже |порога|."""
+    out: dict[str, list[dict]] = {}
+    for card, checks in KILL_CHECKS.items():
+        rows = []
+        for mine, other, thr, meaning in checks:
+            if mine not in risk or other not in risk:
+                continue
+            rho = _rho(risk[mine][form_mask], risk[other][form_mask])
+            killed = (abs(rho) > thr) if thr > 0 else (rho < -thr)
+            rows.append({"signal": mine, "other": other, "rho": rho, "thr": thr, "killed": bool(killed),
+                         "meaning": meaning})
+        out[card] = rows
+    return out
 
 
 def _rho(a: np.ndarray, b: np.ndarray) -> float:
@@ -76,12 +112,16 @@ def card_report(risk: dict[str, np.ndarray], labels_by_target: dict[str, np.ndar
             sub = {k: v[form_mask] for k, v in risk.items()}
             rows = [r for name, br in sigs if (r := signal_row(sub, labels[form_mask], name, br, n_boot, seed))]
             out[card][target] = rows
+    out["_kill_checks"] = kill_checks(risk, form_mask)
     return out
 
 
 def print_card_report(report: dict) -> None:
     print("\n=== Вердикты по карточкам (short-form; линейка — len_norm своей ветки) ===")
+    checks = report.get("_kill_checks", {})
     for card, by_target in report.items():
+        if card.startswith("_"):
+            continue
         print(f"\n## {card}")
         for target in ("factual", "faithful"):
             rows = by_target.get(target, [])
@@ -97,3 +137,8 @@ def print_card_report(report: dict) -> None:
                       f"Δ={r['delta']:+.3f} [{r['ci'][0]:+.3f},{r['ci'][1]:+.3f}] P>NLL={r['p_better']:.2f}  "
                       f"длина={r['len']:.3f}  ρ(NLL)={r['rho_nll']:+.2f} ρ(длина)={r['rho_len']:+.2f}  "
                       f"n={r['n']}  -> {r['verdict']}{flag}")
+        for c in checks.get(card, []):
+            cond = f"|ρ|>{c['thr']}" if c["thr"] > 0 else f"ρ<{-c['thr']}"
+            status = "СРАБОТАЛ" if c["killed"] else "не сработал"
+            print(f"  критерий B2: ρ({c['signal']}, {c['other']})={c['rho']:+.2f}, убивает при {cond} "
+                  f"({c['meaning']}) -> {status}")
