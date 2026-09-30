@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import bootstrap, correlation, metrics, refusal, registry, schema
+from . import bootstrap, card_report, correlation, metrics, refusal, registry, schema
 
 TARGETS = ("faithful", "factual")
 EXCLUDED = -1  # метка исключена из оценки (см. --faithful-exclude-refusals)
@@ -187,7 +187,8 @@ def claim_level_kendall(claim_data: list[tuple[list[float], list[dict]]], target
     return float(np.mean(taus)) if taus else float("nan")
 
 
-def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusals: bool = False) -> dict:
+def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusals: bool = False,
+        cards: bool = False) -> dict:
     table, qids, labels_by_target, claim_data, sources = build_signal_table_and_claims(
         records_iter, faithful_exclude_refusals)
     polarity = registry.signal_polarity()
@@ -220,9 +221,13 @@ def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusa
         for g in ("short", "long") if (form == g).sum() >= LEAKAGE_MIN_GROUP
     }
 
+    cards_result = card_report.card_report(risk, labels_by_target, form == "short", n_boot=n_boot, seed=seed) \
+        if cards else None
+
     return {
         "n_records": len(qids),
         "metrics_by_form": by_form,
+        "card_report": cards_result,
         "metrics_table": metrics_table,
         "correlation": {"names": names, "matrix": corr},
         "paired_bootstrap_top2_factual": boot_result,
@@ -262,6 +267,9 @@ def _print_report(result: dict) -> None:
         print(f"\n!!! ПОДОЗРЕНИЕ НА УТЕЧКУ МЕТКИ: target={target}, {name} auroc={a:.3f} — "
               f"проверьте, не посчитана ли метка из этого сигнала")
 
+    if result.get("card_report"):
+        card_report.print_card_report(result["card_report"])
+
     tau = result["per_question_kendall_tau_factual_mean"]
     print(f"\nВнутри-инстансное ранжирование клеймов (mean Kendall tau, factual): {tau:.3f}")
     print(f"\nКорреляционная матрица: {len(result['correlation']['names'])} сигналов x "
@@ -277,6 +285,8 @@ def main() -> None:
     parser.add_argument("--faithful-exclude-refusals", action="store_true",
                         help="исключить short-form отказы («в пассажах нет информации») из оценки faithful — "
                              "для dump_pilot_v4, см. screener/refusal.py")
+    parser.add_argument("--cards", action="store_true",
+                        help="вердикты по карточкам банка B (screener/card_report.py), short-form")
     parser.add_argument("--sidecar", type=Path, action="append", default=[],
                         help="доп. посчитанные поля по qid (напр. semantic_clusters.jsonl); можно несколько раз")
     args = parser.parse_args()
@@ -291,7 +301,7 @@ def main() -> None:
         records_iter = attach_sidecars(records_iter, load_sidecars(args.sidecar))
 
     result = run(records_iter, n_boot=args.n_boot, seed=args.seed,
-                 faithful_exclude_refusals=args.faithful_exclude_refusals)
+                 faithful_exclude_refusals=args.faithful_exclude_refusals, cards=args.cards)
     _print_report(result)
 
 

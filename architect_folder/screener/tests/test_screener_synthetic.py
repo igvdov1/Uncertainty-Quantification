@@ -154,3 +154,20 @@ def test_faithful_exclude_refusals_masks_only_faithful(records):
     assert (labels["factual"] != run_screener.EXCLUDED).all()
     table = run_screener.compute_metrics_table({"s": np.arange(40, dtype=float)}, labels)
     assert table["faithful"]["s"]["n"] == 30 and table["factual"]["s"]["n"] == 40
+
+
+def test_card_verdict_rule():
+    from screener import card_report as cr
+    assert cr.verdict(0.03, 0.95, 0.9) == "жива"
+    assert cr.verdict(0.03, 0.80, 0.3) == "в пул"
+    assert cr.verdict(-0.01, 0.40, 0.3) == "в пул"
+    assert cr.verdict(-0.01, 0.40, 0.8) == "убита"
+    assert cr.verdict(-0.05, 0.10, 0.1) == "убита"
+
+
+def test_card_report_runs_on_synthetic(records):
+    result = run_screener.run(records, n_boot=50, seed=0, cards=True)
+    rep = result["card_report"]
+    rows = rep["selfcheckgpt-consistency"]["factual"]
+    assert {r["signal"] for r in rows} == {"selfcheck_nli_rag", "selfcheck_nli_cb"}
+    assert all(r["verdict"] in ("жива", "в пул", "убита") for r in rows)
