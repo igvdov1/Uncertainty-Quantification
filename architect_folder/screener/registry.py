@@ -282,6 +282,48 @@ def para_rank_stability_min(record: Record) -> float:
     return float(np.min(_paraphrase_jaccards(record)))
 
 
+def two_sample_agree(record: Record) -> float:
+    """two-sample-verbal-consistency: первые два rag-сэмпла в одном смысловом
+    кластере (NLI-кластеры из semantic_clusters sidecar) — 1, иначе 0."""
+    ids = schema.semantic_cluster_ids(record, "rag")
+    if len(ids) < 2:
+        raise KeyError("меньше двух сэмплов")
+    return float(ids[0] == ids[1])
+
+
+def two_sample_verbal(record: Record) -> float:
+    """two-sample-verbal-consistency: среднее вербализованной уверенности и
+    согласия двух сэмплов (оба в [0, 1]; способ комбинирования — наш, в B2
+    не уточнён)."""
+    return (verbalized_conf(record, "rag") + two_sample_agree(record)) / 2
+
+
+def _variant_nqcs(record: Record) -> np.ndarray:
+    """NQC (std/|mean| топ-k скоров) оригинала и каждого перефраза, у которого есть свой ретривал."""
+    variants = [schema.passages_top20_scores(record)]
+    variants += [p.get("topk_scores", []) for p in record.get("perturbations", {}).get("query_paraphrases", [])]
+    out = []
+    for s in variants:
+        s = np.asarray(s, dtype=float)
+        if len(s) >= 2 and np.any(s):
+            out.append(s.std() / abs(s.mean()))
+    if len(out) < 2:
+        raise KeyError("меньше двух вариантов запроса со скорами")
+    return np.asarray(out)
+
+
+def rqv_best_nqc(record: Record) -> float:
+    """rag-query-variant-qpp: QPP лучшего из вариантов запроса (оригинал + перефразы)."""
+    return float(_variant_nqcs(record).max())
+
+
+def rqv_margin(record: Record) -> float:
+    """rag-query-variant-qpp: «насколько предсказатель уверен в лучшем варианте» —
+    отрыв лучшего NQC от второго."""
+    v = np.sort(_variant_nqcs(record))[::-1]
+    return float(v[0] - v[1])
+
+
 # ---- карточки банка B из sidecar (dump_assembly/gpu_cards.py) --------------
 
 def _derived(name: str) -> Callable:
@@ -339,6 +381,12 @@ FREE_CARD_SPECS: list[SignalSpec] = [
     # paraphrase-rank-stability
     SignalSpec("para_rank_stability_mean", para_rank_stability_mean, False, "confidence"),
     SignalSpec("para_rank_stability_min", para_rank_stability_min, False, "confidence"),
+    # two-sample-verbal-consistency (нужен semantic_clusters sidecar)
+    SignalSpec("two_sample_agree", two_sample_agree, False, "confidence"),
+    SignalSpec("two_sample_verbal", two_sample_verbal, False, "confidence"),
+    # rag-query-variant-qpp
+    SignalSpec("rqv_best_nqc", rqv_best_nqc, False, "confidence"),
+    SignalSpec("rqv_margin", rqv_margin, False, "confidence"),
 ]
 
 # card id (B2_cards.md) -> сигналы; без sidecar — NaN

@@ -38,6 +38,8 @@ CARDS: dict[str, list[tuple[str, str]]] = {
     "retriever-disagreement": [("retriever_agree_jaccard", "rag"), ("retriever_agree_top1", "rag")],
     "paraphrase-rank-stability": [("para_rank_stability_mean", "rag"), ("para_rank_stability_min", "rag")],
     "density-based-dev-embeddings": [("md_rag", "rag"), ("md_cb", "cb"), ("md_diff", "rag")],
+    "two-sample-verbal-consistency": [("two_sample_verbal", "rag"), ("two_sample_agree", "rag")],
+    "rag-query-variant-qpp": [("rqv_best_nqc", "rag"), ("rqv_margin", "rag")],
     "semantic-entropy-probes": [("sep_rag", "rag"), ("sep_cb", "cb")],
     "ccp-faithful-substitution": [("ccp_rag", "rag"), ("ccp_mean_rag", "rag"), ("ccp_cb", "cb"),
                                   ("ccp_mean_cb", "cb"), ("ccp_diff", "rag")],

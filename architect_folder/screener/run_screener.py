@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import bootstrap, card_report, correlation, metrics, refusal, registry, schema
+from . import bootstrap, calibration, card_report, correlation, metrics, refusal, registry, schema
 
 TARGETS = ("faithful", "factual")
 EXCLUDED = -1  # метка исключена из оценки (см. --faithful-exclude-refusals)
@@ -69,6 +69,7 @@ def build_signal_table_and_claims(records_iter, faithful_exclude_refusals: bool 
     claim_level_kendall (token_logprobs + claims, без тяжёлых полей) —
     отдельного второго прохода по тяжёлым записям больше нет."""
     rows, qids, claim_data, sources = [], [], [], []
+    splits, golden_flags, passage_scores = [], [], []
     labels_lists: dict[str, list[int]] = {t: [] for t in TARGETS}
 
     for r in records_iter:
@@ -76,6 +77,10 @@ def build_signal_table_and_claims(records_iter, faithful_exclude_refusals: bool 
         rows.append(registry.compute_all_signals(r))
         qids.append(r["qid"])
         sources.append(r.get("source", "?"))
+        splits.append(r.get("split", "?"))
+        # is_golden = DPR hasanswer; оракул (знает gold) — не сигнал, только для калибровки/критериев
+        golden_flags.append([bool(p.get("is_golden")) for p in r.get("passages", [])])
+        passage_scores.append([float(p.get("score") or 0.0) for p in r.get("passages", [])])
         for t in TARGETS:
             if (t == "faithful" and faithful_exclude_refusals and r.get("source") != "franq_longform"
                     and refusal.is_refusal(r["rag"]["answer"])):
@@ -89,7 +94,11 @@ def build_signal_table_and_claims(records_iter, faithful_exclude_refusals: bool 
     names = sorted(rows[0].keys())
     table = {name: np.array([row[name] for row in rows], dtype=float) for name in names}
     labels_by_target = {t: np.array(v) for t, v in labels_lists.items()}
-    return table, qids, labels_by_target, claim_data, np.array(sources)
+    src = np.array(sources)
+    aux = {"source": src, "split": np.array(splits), "form": np.where(src == "franq_longform", "long", "short"),
+           "golden_flags": golden_flags, "passage_scores": passage_scores,
+           "golden_any": np.array([any(g) for g in golden_flags])}
+    return table, qids, labels_by_target, claim_data, src, aux
 
 
 def to_risk_scores(table: dict[str, np.ndarray], polarity: dict[str, str]) -> dict[str, np.ndarray]:
@@ -188,8 +197,8 @@ def claim_level_kendall(claim_data: list[tuple[list[float], list[dict]]], target
 
 
 def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusals: bool = False,
-        cards: bool = False) -> dict:
-    table, qids, labels_by_target, claim_data, sources = build_signal_table_and_claims(
+        cards: bool = False, calibrate: bool = False) -> dict:
+    table, qids, labels_by_target, claim_data, sources, aux = build_signal_table_and_claims(
         records_iter, faithful_exclude_refusals)
     polarity = registry.signal_polarity()
     risk = to_risk_scores(table, polarity)
@@ -228,6 +237,8 @@ def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusa
         "n_records": len(qids),
         "metrics_by_form": by_form,
         "card_report": cards_result,
+        "calibration": {t: calibration.run_calibration(risk, l, aux, polarity) for t, l in labels_by_target.items()}
+        if calibrate else None,
         "metrics_table": metrics_table,
         "correlation": {"names": names, "matrix": corr},
         "paired_bootstrap_top2_factual": boot_result,
@@ -267,6 +278,9 @@ def _print_report(result: dict) -> None:
         print(f"\n!!! ПОДОЗРЕНИЕ НА УТЕЧКУ МЕТКИ: target={target}, {name} auroc={a:.3f} — "
               f"проверьте, не посчитана ли метка из этого сигнала")
 
+    for target, res in (result.get("calibration") or {}).items():
+        calibration.print_calibration(target, res)
+
     if result.get("card_report"):
         card_report.print_card_report(result["card_report"])
 
@@ -285,6 +299,8 @@ def main() -> None:
     parser.add_argument("--faithful-exclude-refusals", action="store_true",
                         help="исключить short-form отказы («в пассажах нет информации») из оценки faithful — "
                              "для dump_pilot_v4, см. screener/refusal.py")
+    parser.add_argument("--calibration", action="store_true",
+                        help="этап калибровки: Platt/изотоника, ECE/Brier, конформные гарантии (screener/calibration.py)")
     parser.add_argument("--cards", action="store_true",
                         help="вердикты по карточкам банка B (screener/card_report.py), short-form")
     parser.add_argument("--sidecar", type=Path, action="append", default=[],
@@ -301,7 +317,8 @@ def main() -> None:
         records_iter = attach_sidecars(records_iter, load_sidecars(args.sidecar))
 
     result = run(records_iter, n_boot=args.n_boot, seed=args.seed,
-                 faithful_exclude_refusals=args.faithful_exclude_refusals, cards=args.cards)
+                 faithful_exclude_refusals=args.faithful_exclude_refusals, cards=args.cards,
+                 calibrate=args.calibration)
     _print_report(result)
 
 
