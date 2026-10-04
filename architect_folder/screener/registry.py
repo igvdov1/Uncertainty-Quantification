@@ -357,6 +357,12 @@ CARD_SPECS: list[SignalSpec] = FREE_CARD_SPECS + [
     # semantic-entropy-probes (dump_assembly/local_cards.py, только test)
     SignalSpec("sep_rag", _derived("sep_rag"), False, "uncertainty"),
     SignalSpec("sep_cb", _derived("sep_cb"), False, "uncertainty"),
+    # ccp-faithful-substitution (dump_assembly/ccp.py)
+    SignalSpec("ccp_rag", _derived("ccp_rag"), False, "uncertainty"),
+    SignalSpec("ccp_cb", _derived("ccp_cb"), False, "uncertainty"),
+    SignalSpec("ccp_mean_rag", _derived("ccp_mean_rag"), False, "uncertainty"),
+    SignalSpec("ccp_mean_cb", _derived("ccp_mean_cb"), False, "uncertainty"),
+    SignalSpec("ccp_diff", _derived("ccp_diff"), False, "uncertainty"),
     # lettucedetect-lightweight
     SignalSpec("lettuce_max", _derived("lettuce_max"), False, "uncertainty"),
     SignalSpec("lettuce_mean", _derived("lettuce_mean"), False, "uncertainty"),

@@ -39,6 +39,8 @@ CARDS: dict[str, list[tuple[str, str]]] = {
     "paraphrase-rank-stability": [("para_rank_stability_mean", "rag"), ("para_rank_stability_min", "rag")],
     "density-based-dev-embeddings": [("md_rag", "rag"), ("md_cb", "cb"), ("md_diff", "rag")],
     "semantic-entropy-probes": [("sep_rag", "rag"), ("sep_cb", "cb")],
+    "ccp-faithful-substitution": [("ccp_rag", "rag"), ("ccp_mean_rag", "rag"), ("ccp_cb", "cb"),
+                                  ("ccp_mean_cb", "cb"), ("ccp_diff", "rag")],
     "semantic-entropy (бейзлайн брифа)": [("semantic_entropy_rag", "rag"), ("semantic_entropy_cb", "cb")],
     "selfcheckgpt-consistency": [("selfcheck_nli_rag", "rag"), ("selfcheck_nli_cb", "cb")],
     "non-contradiction-probability": [("ncp_rag", "rag"), ("ncp_cb", "cb"), ("ncp_cross", "rag")],
@@ -53,6 +55,7 @@ KILL_CHECKS: dict[str, list[tuple[str, str, float, str]]] = {
     "retriever-disagreement": [("retriever_agree_jaccard", "qpp_nqc", 0.7, "дублирует форму скоров")],
     "density-based-dev-embeddings": [("md_rag", "answer_len_rag", 0.6, "мерит длину"),
                                      ("md_rag", "mean_sample_len_rag", 0.6, "мерит длину")],
+    "ccp-faithful-substitution": [("ccp_rag", "len_norm_rag", 0.85, "дублирует NLL")],
     "semantic-entropy-probes": [("sep_rag", "semantic_entropy_rag", -0.7, "проба не держит SE (ρ ниже порога)"),
                                 ("sep_cb", "semantic_entropy_cb", -0.7, "проба не держит SE (ρ ниже порога)")],
 }

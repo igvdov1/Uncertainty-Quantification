@@ -109,7 +109,7 @@ def process_one(model, tokenizer, device, q: Question, nli_scorer) -> dict | Non
     # long-form FRANQ пассажи не из ретривера (распарсены из текста) — у них нет score
     passages_top20_scores = [(p.get("score") or 0.0) for p in (q.passages or [])][:20]
 
-    return assemble_record(
+    record = assemble_record(
         q=q, rag_fields=rag_fields, cb_fields=cb_fields,
         samples_rag=samples_rag, samples_cb=samples_cb,
         paraphrases=paraphrases, retriever_alt=retriever_alt,
@@ -118,6 +118,8 @@ def process_one(model, tokenizer, device, q: Question, nli_scorer) -> dict | Non
         label_faithful=label_faithful, label_factual=label_factual,
         claims=claims, signals=dump_signals,
     )
+    record["prompt_version"] = "v1" if is_longform else generation.PROMPT_VERSION
+    return record
 
 
 def main() -> None:
@@ -139,7 +141,13 @@ def main() -> None:
                          help="не считать attention_by_head — самое тяжёлое поле по RAM/диску "
                               "(растёт с длиной последовательности, особенно на long-form teacher_force); "
                               "не нужно для гейта A5/бейзлайнов, понадобится позже для attention-based идей")
+    parser.add_argument("--prompt-version", default=generation.PROMPT_VERSION,
+                        choices=sorted(generation.PROMPT_VERSIONS),
+                        help="v2: «только ответ» + отказ 'unknown'; v1 — как в dump_pilot_v1..v4 "
+                             "(long-form всегда v1, см. generation.PROMPT_VERSIONS)")
     args = parser.parse_args()
+    generation.PROMPT_VERSION = args.prompt_version
+    print(f"Промпт генерации: {args.prompt_version}")
 
     if args.skip_attention_head:
         generation.INCLUDE_ATTENTION_HEAD = False

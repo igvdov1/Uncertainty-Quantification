@@ -20,7 +20,8 @@ REFUSAL_RE = re.compile(
     r"not (explicitly )?(mention|state|provide|contain|specif)"
     r"|no (direct |specific )?(information|mention)"
     r"|not aware|couldn't find|could not find|unable to|don't have|do not have"
-    r"|cannot (determine|find)|isn't (mentioned|provided)|does not (say|include)",
+    r"|cannot (determine|find)|isn't (mentioned|provided)|does not (say|include)"
+    r"|^\s*unknown\.?\s*$",  # явный отказ промпта v2 (dump_assembly/generation.PROMPT_VERSIONS)
     re.IGNORECASE,
 )
 

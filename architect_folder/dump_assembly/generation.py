@@ -53,6 +53,26 @@ class PromptSpans:
 INSTRUCTION_RAG = "Using the context passages provided below, answer the question concisely."
 INSTRUCTION_CB = "Answer the question concisely, using your own knowledge."
 
+# Версии промпта (rag, closed_book). v1 — дампы до v4 включительно. v2 (решение
+# 2026-10-05, runner_folder/C3_free_cards_results.md): «только ответ, без
+# объяснений» + явный отказ "unknown". На v1 модель отвечала предложениями,
+# а при неуверенности — длинными уклончивыми отказами («The passages do not
+# explicitly state... however...»): длина ответа одна давала factual AUROC
+# 0.759, consistency-методы во многом мерили многословие, а LLM-судья путался
+# на отказах. Long-form (teacher_force текста FRANQ) всегда v1 — их
+# развёрнутый ответ под формат «только сущность» не подходит.
+PROMPT_VERSIONS = {
+    "v1": (INSTRUCTION_RAG, INSTRUCTION_CB),
+    "v2": (
+        "Using the context passages provided below, answer the question with only the answer itself "
+        "(a name, date, number or short phrase), without explanation. "
+        "If the passages do not contain the answer, reply exactly: unknown",
+        "Answer the question with only the answer itself (a name, date, number or short phrase), "
+        "without explanation, using your own knowledge. If you do not know the answer, reply exactly: unknown",
+    ),
+}
+PROMPT_VERSION = "v2"  # для новых сборок; run_assembly / augment_perturbations переопределяют
+
 
 _CHAT_SENTINEL = "\x00"
 
@@ -79,14 +99,16 @@ def _chat_prefix_suffix_ids(tokenizer) -> tuple[list[int], list[int]]:
     return prefix_ids, suffix_ids
 
 
-def build_prompt_ids(tokenizer, question: str, passages: list[str] | None) -> tuple[list[int], PromptSpans]:
+def build_prompt_ids(tokenizer, question: str, passages: list[str] | None,
+                     prompt_version: str | None = None) -> tuple[list[int], PromptSpans]:
     def toks(text: str) -> list[int]:
         return tokenizer(text, add_special_tokens=False)["input_ids"]
 
     prefix_ids, suffix_ids = _chat_prefix_suffix_ids(tokenizer)
     ids: list[int] = list(prefix_ids)
 
-    instruction = INSTRUCTION_RAG if passages else INSTRUCTION_CB
+    rag_instr, cb_instr = PROMPT_VERSIONS[prompt_version or PROMPT_VERSION]
+    instruction = rag_instr if passages else cb_instr
     a = len(ids)
     ids += toks(f"Instruction: {instruction}\n\n")
     b = len(ids)
@@ -160,9 +182,10 @@ def _extract_attention_fields(attn_step_layers: tuple, prompt_len: int, spans: P
 
 
 @torch.no_grad()
-def generate_greedy(model, tokenizer, question: str, passages: list[str] | None, device) -> dict:
+def generate_greedy(model, tokenizer, question: str, passages: list[str] | None, device,
+                    prompt_version: str | None = None) -> dict:
     """Автогенерация с полным извлечением полей. passages=None -> closed-book."""
-    prompt_ids, spans = build_prompt_ids(tokenizer, question, passages)
+    prompt_ids, spans = build_prompt_ids(tokenizer, question, passages, prompt_version)
     prompt_len = len(prompt_ids)
     input_ids = torch.tensor([prompt_ids], device=device)
     n_passages = len(spans.passages)
@@ -221,7 +244,8 @@ def teacher_force(model, tokenizer, question: str, passages: list[str] | None, t
     Даёт те же поля, что generate_greedy, но без вызова .generate() — для
     long-form FRANQ, где ответ и разметка переиспользуются, а logprobs/
     attention должны быть от нашей модели (см. докстринг модуля)."""
-    prompt_ids, spans = build_prompt_ids(tokenizer, question, passages)
+    # long-form FRANQ: их развёрнутый текст — всегда инструкция v1 (см. PROMPT_VERSIONS)
+    prompt_ids, spans = build_prompt_ids(tokenizer, question, passages, "v1")
     prompt_len = len(prompt_ids)
     n_passages = len(spans.passages)
 
@@ -283,9 +307,9 @@ def teacher_force(model, tokenizer, question: str, passages: list[str] | None, t
 
 @torch.no_grad()
 def sample(model, tokenizer, question: str, passages: list[str] | None, device,
-           n_samples: int = N_SAMPLES, temperature: float = 1.0) -> dict:
+           n_samples: int = N_SAMPLES, temperature: float = 1.0, prompt_version: str | None = None) -> dict:
     """≥10 сэмплов с логпробами и id токенов (A1 §1.4 / B0-A5)."""
-    prompt_ids, _ = build_prompt_ids(tokenizer, question, passages)
+    prompt_ids, _ = build_prompt_ids(tokenizer, question, passages, prompt_version)
     input_ids = torch.tensor([prompt_ids], device=device)
     prompt_len = len(prompt_ids)
 

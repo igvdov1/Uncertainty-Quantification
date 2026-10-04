@@ -158,14 +158,16 @@ def cmd_generate(args: argparse.Namespace) -> None:
                 continue
             is_longform = r["source"] == "franq_longform"
             paraphrases = r.get("perturbations", {}).get("query_paraphrases", [])
+            # тот же промпт, что у основного ответа записи (дампы до v4 — без поля, это v1)
+            pv = r.get("prompt_version", "v1")
 
             for pi, p in enumerate(paraphrases):
                 para_text = p["text"]
 
                 # closed-book — для всех источников (память модели, RAG не при чём)
-                cb_out = generation.generate_greedy(model, tokenizer, para_text, None, device)
+                cb_out = generation.generate_greedy(model, tokenizer, para_text, None, device, prompt_version=pv)
                 cb_samples = generation.sample(model, tokenizer, para_text, None, device,
-                                                n_samples=N_SAMPLES_PARAPHRASE)
+                                                n_samples=N_SAMPLES_PARAPHRASE, prompt_version=pv)
                 p["cb_answer"] = cb_out["answer"]
                 p["cb_samples"] = cb_samples["samples"]
 
@@ -177,9 +179,10 @@ def cmd_generate(args: argparse.Namespace) -> None:
                         p["topk_doc_ids"] = [c["doc_id"] for c in ctxs]
                         p["topk_scores"] = [c["score"] for c in ctxs]
                         passage_texts = [c["text"] for c in ctxs]
-                        rag_out = generation.generate_greedy(model, tokenizer, para_text, passage_texts, device)
+                        rag_out = generation.generate_greedy(model, tokenizer, para_text, passage_texts, device,
+                                                             prompt_version=pv)
                         rag_samples = generation.sample(model, tokenizer, para_text, passage_texts, device,
-                                                         n_samples=N_SAMPLES_PARAPHRASE)
+                                                         n_samples=N_SAMPLES_PARAPHRASE, prompt_version=pv)
                         p["rag_answer"] = rag_out["answer"]
                         p["rag_samples"] = rag_samples["samples"]
                     else:

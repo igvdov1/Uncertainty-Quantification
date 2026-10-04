@@ -202,6 +202,11 @@ def make_record(rng: np.random.Generator, qid: str, split: str) -> dict:
                 "md_diff": float(2 * (cb_quality - quality) + rng.normal(0, 0.3)),
                 "sep_rag": float(np.clip(1 - quality + rng.normal(0, 0.1), 0, 1)),
                 "sep_cb": float(np.clip(1 - cb_quality + rng.normal(0, 0.1), 0, 1)),
+                "ccp_rag": float(np.clip(1 - quality + rng.normal(0, 0.1), 0, 1)),
+                "ccp_cb": float(np.clip(1 - cb_quality + rng.normal(0, 0.1), 0, 1)),
+                "ccp_mean_rag": float(np.clip(0.3 * (1 - quality) + rng.normal(0, 0.05), 0, 1)),
+                "ccp_mean_cb": float(np.clip(0.3 * (1 - cb_quality) + rng.normal(0, 0.05), 0, 1)),
+                "ccp_diff": float(cb_quality - quality + rng.normal(0, 0.1)),
             },
         },
 
