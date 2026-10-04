@@ -84,30 +84,39 @@ def get_semantic_ids(strings: list[str], equivalent: Callable[[int, int], bool])
     return ids
 
 
-def needed_pairs(texts: list[str]) -> list[tuple[str, str]]:
-    """Все упорядоченные пары различных текстов — с запасом покрывает любые
-    сравнения, которые сделает get_semantic_ids. Считать их одним батчем
-    быстрее, чем гонять NLI последовательно внутри жадного цикла."""
-    uniq = list(dict.fromkeys(texts))
-    return [(a, b) for a in uniq for b in uniq if a != b]
-
-
 def cluster_samples(question: str, samples: list[str], nli_predict: Callable[[list[tuple[str, str]]], list[int]],
                     strict: bool = False, condition_on_question: bool = True) -> list[int]:
-    """nli_predict: список (premise, hypothesis) -> метки CONTRADICTION/NEUTRAL/ENTAILMENT."""
+    """nli_predict: список (premise, hypothesis) -> метки CONTRADICTION/NEUTRAL/ENTAILMENT.
+
+    Та же жадная схема, что get_semantic_ids (и jlko/semantic_uncertainty):
+    новый кластер открывает первый неразмеченный текст, и с ним сравниваются
+    все последующие неразмеченные — одним батчем NLI на кластер (в обе
+    стороны). Вызовов O(n · число кластеров), а не O(n²): раньше здесь
+    заранее считались все пары, на 23 ответах по перефразам это ~500 пар на
+    набор. Побайтно одинаковые тексты — эквивалентны без NLI."""
     if not samples:
         return []
     texts = [f"{question} {s}" if condition_on_question else s for s in samples]
-    pairs = needed_pairs(texts)
-    labels = dict(zip(pairs, nli_predict(pairs))) if pairs else {}
-
-    def equivalent(i: int, j: int) -> bool:
-        a, b = texts[i], texts[j]
-        if a == b:
-            return True
-        return equivalent_from_labels(labels[(a, b)], labels[(b, a)], strict)
-
-    return get_semantic_ids(texts, equivalent)
+    ids = [-1] * len(texts)
+    next_id = 0
+    for i in range(len(texts)):
+        if ids[i] != -1:
+            continue
+        ids[i] = next_id
+        rest = [j for j in range(i + 1, len(texts)) if ids[j] == -1]
+        same = [j for j in rest if texts[j] == texts[i]]
+        for j in same:
+            ids[j] = next_id
+        todo = sorted({texts[j] for j in rest if texts[j] != texts[i]})
+        if todo:
+            labels = nli_predict([(texts[i], b) for b in todo] + [(b, texts[i]) for b in todo])
+            fwd, bwd = labels[:len(todo)], labels[len(todo):]
+            equiv = {b for b, l12, l21 in zip(todo, fwd, bwd) if equivalent_from_labels(l12, l21, strict)}
+            for j in rest:
+                if ids[j] == -1 and texts[j] in equiv:
+                    ids[j] = next_id
+        next_id += 1
+    return ids
 
 
 # ---- NLI-модель ----------------------------------------------------------

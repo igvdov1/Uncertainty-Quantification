@@ -48,7 +48,7 @@ def test_cluster_samples_uses_question_and_dedups():
     ids = sc.cluster_samples("Capital of France?", samples, nli)
     assert ids == [0, 0, 0, 1]
     assert all(p.startswith("Capital of France? ") for p, _ in nli.seen)
-    assert len(nli.seen) == 3 * 2                                   # 3 уникальных текста, упорядоченные пары
+    assert len(nli.seen) == 4      # кластер «Paris»: 2 других уникальных текста x 2 стороны; «Lyon» — один в кластере
     assert sc.cluster_samples("q", [], nli) == []
 
 
@@ -77,3 +77,21 @@ def test_semantic_entropy_edge_cases():
         registry.semantic_entropy(_rec([0, 1], [[-1.0]]), "rag")
     with pytest.raises(KeyError):
         registry.semantic_entropy({"qid": "x", "rag": {"samples": [], "sample_logprobs": []}}, "rag")
+
+
+def test_cluster_samples_matches_reference_greedy_ids():
+    """Батч-версия даёт те же id, что эталонный get_semantic_ids с попарной эквивалентностью."""
+    import random
+    rng = random.Random(0)
+    for _ in range(50):
+        samples = [rng.choice(["a", "b", "c", "d", "ab", "ba"]) for _ in range(rng.randint(1, 12))]
+
+        def nli(pairs):
+            # «эквивалентны», если делят хотя бы одну букву (нетранзитивно — проверяет жадность)
+            return [E if set(p.split()[-1]) & set(h.split()[-1]) else C for p, h in pairs]
+
+        got = sc.cluster_samples("q", samples, nli)
+        texts = [f"q {s}" for s in samples]
+        ref = sc.get_semantic_ids(texts, lambda i, j: texts[i] == texts[j] or
+                                  bool(set(samples[i]) & set(samples[j])))
+        assert got == ref
