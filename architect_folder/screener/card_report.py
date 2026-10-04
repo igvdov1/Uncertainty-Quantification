@@ -25,7 +25,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.stats import spearmanr
 
-from . import bootstrap, metrics
+from . import bootstrap, incremental, metrics
 
 ALIVE_DELTA, ALIVE_P, POOL_DELTA, POOL_CORR = 0.02, 0.9, -0.03, 0.5
 
@@ -103,7 +103,8 @@ def signal_row(risk: dict[str, np.ndarray], labels: np.ndarray, name: str, branc
     rho_nll, rho_len = _rho(s[m], nll[m]), _rho(s[m], length[m])
     return {"signal": name, "n": int(m.sum()), "auroc": a, "nll": a_nll, "delta": a - a_nll,
             "ci": (bs["ci_low"], bs["ci_high"]), "p_better": bs["p_a_better"], "len": a_len,
-            "rho_nll": rho_nll, "rho_len": rho_len, "verdict": verdict(a - a_nll, bs["p_a_better"], rho_nll)}
+            "rho_nll": rho_nll, "rho_len": rho_len, "verdict": verdict(a - a_nll, bs["p_a_better"], rho_nll),
+            "incremental": incremental.incremental_value(risk, labels, name, n_boot=n_boot, seed=seed)}
 
 
 def card_report(risk: dict[str, np.ndarray], labels_by_target: dict[str, np.ndarray], form_mask: np.ndarray,
@@ -140,6 +141,9 @@ def print_card_report(report: dict) -> None:
                       f"Δ={r['delta']:+.3f} [{r['ci'][0]:+.3f},{r['ci'][1]:+.3f}] P>NLL={r['p_better']:.2f}  "
                       f"длина={r['len']:.3f}  ρ(NLL)={r['rho_nll']:+.2f} ρ(длина)={r['rho_len']:+.2f}  "
                       f"n={r['n']}  -> {r['verdict']}{flag}")
+                for base, inc in (r.get("incremental") or {}).items():
+                    print(f"      + к {base:9s}: {inc['base']:.3f} -> {inc['with']:.3f}  Δ={inc['delta']:+.3f} "
+                          f"[{inc['ci'][0]:+.3f},{inc['ci'][1]:+.3f}] P={inc['p_better']:.2f}  n={inc['n']}")
         for c in checks.get(card, []):
             cond = f"|ρ|>{c['thr']}" if c["thr"] > 0 else f"ρ<{-c['thr']}"
             status = "СРАБОТАЛ" if c["killed"] else "не сработал"

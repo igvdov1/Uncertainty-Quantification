@@ -171,3 +171,16 @@ def test_card_report_runs_on_synthetic(records):
     rows = rep["selfcheckgpt-consistency"]["factual"]
     assert {r["signal"] for r in rows} == {"selfcheck_nli_rag", "selfcheck_nli_cb"}
     assert all(r["verdict"] in ("жива", "в пул", "убита") for r in rows)
+
+
+def test_incremental_value_detects_orthogonal_signal():
+    from screener import incremental
+    rng = np.random.default_rng(0)
+    n = 400
+    a, b = rng.normal(size=n), rng.normal(size=n)
+    labels = (a + b + 0.5 * rng.normal(size=n) < 0).astype(int)     # ошибка ~ a + b
+    risk = {"len_norm_rag": a, "mean_sample_len_rag": rng.normal(size=n), "orth": b, "dup": a + 0.01 * rng.normal(size=n)}
+    orth = incremental.incremental_value(risk, labels, "orth", n_boot=100)
+    dup = incremental.incremental_value(risk, labels, "dup", n_boot=100)
+    assert orth["NLL"]["delta"] > 0.08 and orth["NLL"]["ci"][0] > 0
+    assert abs(dup["NLL"]["delta"]) < 0.02
