@@ -411,6 +411,12 @@ CARD_SPECS: list[SignalSpec] = FREE_CARD_SPECS + [
     SignalSpec("ccp_mean_rag", _derived("ccp_mean_rag"), False, "uncertainty"),
     SignalSpec("ccp_mean_cb", _derived("ccp_mean_cb"), False, "uncertainty"),
     SignalSpec("ccp_diff", _derived("ccp_diff"), False, "uncertainty"),
+    # memory-strength-paraphrase / semantic-reformulation-entropy / context-sufficiency (gpu_cards2.py)
+    SignalSpec("mem_entropy_greedy", _derived("mem_entropy_greedy"), False, "uncertainty"),
+    SignalSpec("mem_entropy_all", _derived("mem_entropy_all"), False, "uncertainty"),
+    SignalSpec("sre_entropy_greedy", _derived("sre_entropy_greedy"), False, "uncertainty"),
+    SignalSpec("sre_entropy_all", _derived("sre_entropy_all"), False, "uncertainty"),
+    SignalSpec("ctx_sufficiency", _derived("ctx_sufficiency"), False, "confidence"),
     # lettucedetect-lightweight
     SignalSpec("lettuce_max", _derived("lettuce_max"), False, "uncertainty"),
     SignalSpec("lettuce_mean", _derived("lettuce_mean"), False, "uncertainty"),

@@ -42,7 +42,7 @@ from sklearn.linear_model import LogisticRegression
 
 from . import metrics
 
-ALPHAS = (0.1, 0.2, 0.3)
+ALPHAS = (0.2, 0.3, 0.4)
 DELTA = 0.1
 N_BINS = 10
 PROB_SIGNALS = {"p_true_rag": "confidence", "p_true_cb": "confidence", "verbalized_conf_rag": "confidence"}
@@ -166,18 +166,22 @@ def run_calibration(risk: dict[str, np.ndarray], labels: np.ndarray, aux: dict, 
     return out
 
 
+def _f(x: float, fmt: str = ".2f") -> str:
+    return "—" if x is None or not np.isfinite(x) else format(x, fmt)
+
+
 def print_calibration(target: str, res: dict) -> None:
     print(f"\n=== Калибровка, target={target} (short-form: dev {res['n_dev']} -> test {res['n_test']}) ===")
-    print("  сигнал                     AUROC  | ECE Platt  iso  | Brier Platt | α=0.2: ошибка/доля отв.  "
-          "отказ с golden/без | худш.группа общ/Mondrian")
-    rows = sorted(res["signals"].items(), key=lambda kv: -kv[1]["auroc_raw"])
-    for name, s in rows:
-        c = s["conformal"][0.2]
-        raw = f"  (как есть: ECE {s['ece_raw']:.3f})" if "ece_raw" in s else ""
-        print(f"  {name:26s} {s['auroc_raw']:.3f}  | {s['ece_platt']:.3f}  {s['ece_iso']:.3f} | {s['brier_platt']:.3f}"
-              f"       | {c['sel_error']:.3f}/{c['coverage']:.2f}"
-              f"                {c['abstain_with_golden']:.2f}/{c['abstain_without_golden']:.2f}"
-              f"     | {c['worst_group_err_marginal']:.3f}/{c['worst_group_err_mondrian']:.3f}{raw}")
+    print("  Конформный порог (LTT, δ=0.1): «доля ответов (ошибка среди отвеченных)» на test при α=0.2/0.3/0.4;\n"
+          "  при α=0.3 ещё доля отказов на вопросах с golden-пассажем / без и худшая группа source: общий / Mondrian")
+    print(f"  {'сигнал':30s} AUROC | ECE Platt/iso | Brier | α=0.2       α=0.3       α=0.4       | отказ g/без | худш. гр.")
+    for name, s in sorted(res["signals"].items(), key=lambda kv: -kv[1]["auroc_raw"]):
+        cs = "  ".join(f"{_f(s['conformal'][a]['coverage'])} ({_f(s['conformal'][a]['sel_error'])})" for a in ALPHAS)
+        c3 = s["conformal"][0.3]
+        raw = f"  [как есть: ECE {s['ece_raw']:.3f}]" if "ece_raw" in s else ""
+        print(f"  {name:30s} {s['auroc_raw']:.3f} | {s['ece_platt']:.3f}/{s['ece_iso']:.3f}   | {s['brier_platt']:.3f} | "
+              f"{cs} | {_f(c3['abstain_with_golden'])}/{_f(c3['abstain_without_golden'])}   | "
+              f"{_f(c3['worst_group_err_marginal'])}/{_f(c3['worst_group_err_mondrian'])}{raw}")
     for tr in res["traq"]:
         if "coverage_test" in tr:
             print(f"  traq retrieval α={tr['alpha']}: покрытие golden на test {tr['coverage_test']:.3f} "
