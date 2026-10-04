@@ -6,9 +6,12 @@
 Основной target — factual; faithful вторичный (метки LLM-судьи, отказы
 исключены, см. runner_folder/C1_faithful_label_leakage.md §9).
 
-Линейка — простой NLL своей ветки (len_norm_rag / len_norm_cb). Рядом —
-длина сэмплов своей ветки (mean_sample_len_*): на пилоте она одна даёт
-factual 0.759, сигнал, не обгоняющий длину, помечается.
+Линейка — простой NLL RAG-ответа (len_norm_rag) для ВСЕХ сигналов, включая
+closed-book: метки стоят на RAG-ответ, и вопрос скрининга — даёт ли сигнал
+лучший предсказатель его ошибки, чем бесплатный NLL этого же ответа
+(решение 2026-10-04; раньше cb-сигналы сравнивались с len_norm_cb — слишком
+мягко). Рядом — длина RAG-сэмплов (mean_sample_len_rag): на пилоте она одна
+даёт factual 0.759, сигнал, не обгоняющий длину, помечается.
 
 Правило (фиксировано до просмотра результатов карточек):
   жива    — Δ AUROC к NLL >= +0.02 и P(лучше NLL) >= 0.9 по парному bootstrap
@@ -26,7 +29,7 @@ from . import bootstrap, metrics
 
 ALIVE_DELTA, ALIVE_P, POOL_DELTA, POOL_CORR = 0.02, 0.9, -0.03, 0.5
 
-# card id -> [(сигнал, ветка линейки)]. Сигналы ретривера и контекста — против rag-NLL.
+# card id -> [(сигнал, ветка сигнала)]. Ветка — справочно: линейка у всех rag-NLL.
 CARDS: dict[str, list[tuple[str, str]]] = {
     "uplift-contrast-baseline": [("uplift_len_norm", "rag"), ("nll_ratio", "rag")],
     "attention-context-ratio": [("attn_ctx_mean", "rag"), ("attn_ctx_min", "rag"), ("attn_ctx_vs_param", "rag")],
@@ -91,7 +94,7 @@ def signal_row(risk: dict[str, np.ndarray], labels: np.ndarray, name: str, branc
     s = risk.get(name)
     if s is None:
         return None
-    nll, length = risk[f"len_norm_{branch}"], risk[f"mean_sample_len_{branch}"]
+    nll, length = risk["len_norm_rag"], risk["mean_sample_len_rag"]
     m = ~(np.isnan(s) | np.isnan(nll)) & (labels >= 0)
     if m.sum() < 10 or len(set(labels[m])) < 2:
         return None
@@ -117,7 +120,7 @@ def card_report(risk: dict[str, np.ndarray], labels_by_target: dict[str, np.ndar
 
 
 def print_card_report(report: dict) -> None:
-    print("\n=== Вердикты по карточкам (short-form; линейка — len_norm своей ветки) ===")
+    print("\n=== Вердикты по карточкам (short-form; линейка — len_norm_rag для всех) ===")
     checks = report.get("_kill_checks", {})
     for card, by_target in report.items():
         if card.startswith("_"):
