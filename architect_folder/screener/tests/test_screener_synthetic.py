@@ -165,7 +165,9 @@ def test_card_verdict_rule():
     assert cr.verdict(-0.05, 0.10, 0.1) == "убита"
 
 
-def test_card_report_runs_on_synthetic(records):
+def test_card_report_runs_on_synthetic(records, monkeypatch):
+    from screener import card_report as cr
+    monkeypatch.setattr(cr, "WITH_INCREMENTAL", False)
     result = run_screener.run(records, n_boot=50, seed=0, cards=True)
     rep = result["card_report"]
     rows = rep["selfcheckgpt-consistency"]["factual"]

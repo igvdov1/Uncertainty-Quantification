@@ -196,10 +196,24 @@ def claim_level_kendall(claim_data: list[tuple[list[float], list[dict]]], target
     return float(np.mean(taus)) if taus else float("nan")
 
 
+def cache_key(input_path: Path, sidecars: list[Path], faithful_exclude_refusals: bool) -> str:
+    """Таблица сигналов зависит от дампа, sidecar-файлов, флага отказов и
+    состава реестра — всё это в ключе (пути + размер + mtime)."""
+    import hashlib
+    parts = [str(faithful_exclude_refusals), ",".join(sorted(registry.signal_polarity()))]
+    for p in [input_path, *sidecars]:
+        st = Path(p).stat()
+        parts.append(f"{Path(p).resolve()}:{st.st_size}:{st.st_mtime_ns}")
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
+
+
 def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusals: bool = False,
-        cards: bool = False, calibrate: bool = False) -> dict:
-    table, qids, labels_by_target, claim_data, sources, aux = build_signal_table_and_claims(
-        records_iter, faithful_exclude_refusals)
+        cards: bool = False, calibrate: bool = False, built: tuple | None = None) -> dict:
+    """built — готовый результат build_signal_table_and_claims (из кэша);
+    тогда records_iter не читается."""
+    if built is None:
+        built = build_signal_table_and_claims(records_iter, faithful_exclude_refusals)
+    table, qids, labels_by_target, claim_data, sources, aux = built
     polarity = registry.signal_polarity()
     risk = to_risk_scores(table, polarity)
     metrics_table = compute_metrics_table(risk, labels_by_target)
@@ -299,6 +313,8 @@ def main() -> None:
     parser.add_argument("--faithful-exclude-refusals", action="store_true",
                         help="исключить short-form отказы («в пассажах нет информации») из оценки faithful — "
                              "для dump_pilot_v4, см. screener/refusal.py")
+    parser.add_argument("--cache-dir", type=Path, default=None,
+                        help="кэш таблицы сигналов: повторный запуск с тем же дампом/sidecar не перечитывает дамп")
     parser.add_argument("--calibration", action="store_true",
                         help="этап калибровки: Platt/изотоника, ECE/Brier, конформные гарантии (screener/calibration.py)")
     parser.add_argument("--cards", action="store_true",
@@ -316,9 +332,22 @@ def main() -> None:
     if args.sidecar:
         records_iter = attach_sidecars(records_iter, load_sidecars(args.sidecar))
 
+    built = None
+    if args.cache_dir and args.input:
+        import pickle
+        args.cache_dir.mkdir(parents=True, exist_ok=True)
+        cache = args.cache_dir / f"table_{cache_key(args.input, args.sidecar, args.faithful_exclude_refusals)}.pkl"
+        if cache.exists():
+            print(f"Таблица сигналов из кэша: {cache}")
+            built = pickle.loads(cache.read_bytes())
+        else:
+            built = build_signal_table_and_claims(records_iter, args.faithful_exclude_refusals)
+            cache.write_bytes(pickle.dumps(built))
+            print(f"Таблица сигналов сохранена в кэш: {cache}")
+
     result = run(records_iter, n_boot=args.n_boot, seed=args.seed,
                  faithful_exclude_refusals=args.faithful_exclude_refusals, cards=args.cards,
-                 calibrate=args.calibration)
+                 calibrate=args.calibration, built=built)
     _print_report(result)
 
 

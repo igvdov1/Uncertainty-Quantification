@@ -28,6 +28,9 @@ from scipy.stats import spearmanr
 from . import bootstrap, incremental, metrics
 
 ALIVE_DELTA, ALIVE_P, POOL_DELTA, POOL_CORR = 0.02, 0.9, -0.03, 0.5
+# добавочная ценность — тысячи обучений логрегрессии на ~50 сигналов; тесты на
+# синтетике её отключают (саму её проверяет test_incremental_value_*)
+WITH_INCREMENTAL = True
 
 # card id -> [(сигнал, ветка сигнала)]. Ветка — справочно: линейка у всех rag-NLL.
 CARDS: dict[str, list[tuple[str, str]]] = {
@@ -114,7 +117,8 @@ def signal_row(risk: dict[str, np.ndarray], labels: np.ndarray, name: str, branc
     return {"signal": name, "n": int(m.sum()), "auroc": a, "nll": a_nll, "delta": a - a_nll,
             "ci": (bs["ci_low"], bs["ci_high"]), "p_better": bs["p_a_better"], "len": a_len,
             "rho_nll": rho_nll, "rho_len": rho_len, "verdict": verdict(a - a_nll, bs["p_a_better"], rho_nll),
-            "incremental": incremental.incremental_value(risk, labels, name, n_boot=n_boot, seed=seed)}
+            "incremental": incremental.incremental_value(risk, labels, name, n_boot=n_boot, seed=seed)
+            if WITH_INCREMENTAL else None}
 
 
 def card_report(risk: dict[str, np.ndarray], labels_by_target: dict[str, np.ndarray], form_mask: np.ndarray,

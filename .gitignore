@@ -10,3 +10,4 @@ __pycache__/
 *.jsonl
 *.zip
 rag_uncertainty/
+screener_cache/
