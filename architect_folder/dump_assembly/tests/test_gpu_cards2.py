@@ -15,7 +15,7 @@ def city_nli(pairs):
 def _rec(source="nq"):
     return {"qid": "q", "source": source, "question": "Capital?", "passages": ["Paris is the capital."],
             "rag_answer": "Paris", "rag_samples": ["Paris", "Paris"],
-            "cb_answer": "Paris", "cb_samples": ["Lyon", "Paris"],
+            "cb_answer": "Paris", "cb_samples": ["Lyon", "Paris", "Paris", "Lyon"],
             "paraphrases": [{"cb_answer": "Lyon", "cb_samples": ["Lyon"], "rag_answer": "Paris", "rag_samples": ["Paris"]},
                             {"cb_answer": "Paris", "cb_samples": [], "rag_answer": None, "rag_samples": []}]}
 
@@ -23,7 +23,7 @@ def _rec(source="nq"):
 def test_answer_sets_and_longform_has_no_rag_sets():
     s = g2.answer_sets(_rec())
     assert s["mem_greedy"] == ["Paris", "Lyon", "Paris"]
-    assert len(s["mem_all"]) == 3 + 2 + 1 and s["sre_greedy"] == ["Paris", "Paris"]
+    assert len(s["mem_all"]) == 3 + 3 + 1 and s["sre_greedy"] == ["Paris", "Paris"]   # у оригинала первые 3 сэмпла
     assert "sre_greedy" not in g2.answer_sets(_rec("franq_longform"))
 
 

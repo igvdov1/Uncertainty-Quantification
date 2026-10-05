@@ -7,7 +7,9 @@ GPU-пачка №2 карточек банка B (researcher_folder/B2_cards.md
       исходный вопрос и его перефразы. Формализация — наша: NLI-кластеры
       ответов (как semantic entropy, dump_assembly/semantic_clusters.py) и
       дискретная энтропия кластеров. mem_entropy_greedy — жадные ответы
-      (оригинал + перефразы), mem_entropy_all — плюс сэмплы.
+      (оригинал + перефразы), mem_entropy_all — плюс по 3 сэмпла на каждый
+      вариант вопроса (у перефразов в дампе их 3; у оригинала 10 — берём первые
+      3, чтобы варианты весили одинаково и NLI-пар было меньше).
   semantic-reformulation-entropy: то же для rag-ответов, у каждого перефраза
       свой ретривал (смесь «модель нестабильна» и «ретривер нестабилен» —
       это и есть перенос из карточки). Только short-form.
@@ -34,6 +36,7 @@ import numpy as np
 from .semantic_clusters import DEFAULT_NLI, DebertaNLI, cluster_samples
 
 LONGFORM = "franq_longform"
+N_SAMPLES_PER_VARIANT = 3  # = N_SAMPLES_PARAPHRASE в augment_perturbations
 DEFAULT_GENERATOR = "meta-llama/Llama-3.1-8B-Instruct"
 SUFFICIENCY_PROMPT = (
     "Passages:\n{passages}\n\nQuestion: {question}\n\n"
@@ -60,11 +63,11 @@ def cluster_entropy(ids: list[int]) -> float:
 def answer_sets(rec: dict) -> dict[str, list[str]]:
     paras = rec["paraphrases"]
     cb_greedy = [rec["cb_answer"]] + [p["cb_answer"] for p in paras if p.get("cb_answer")]
-    cb_all = cb_greedy + rec["cb_samples"] + [s for p in paras for s in p.get("cb_samples") or []]
+    cb_all = cb_greedy + rec["cb_samples"][:N_SAMPLES_PER_VARIANT] + [s for p in paras for s in p.get("cb_samples") or []]
     out = {"mem_greedy": cb_greedy, "mem_all": cb_all}
     if rec["source"] != LONGFORM:
         rag_greedy = [rec["rag_answer"]] + [p["rag_answer"] for p in paras if p.get("rag_answer")]
-        rag_all = rag_greedy + rec["rag_samples"] + [s for p in paras for s in p.get("rag_samples") or []]
+        rag_all = rag_greedy + rec["rag_samples"][:N_SAMPLES_PER_VARIANT] + [s for p in paras for s in p.get("rag_samples") or []]
         out.update(sre_greedy=rag_greedy, sre_all=rag_all)
     return out
 
