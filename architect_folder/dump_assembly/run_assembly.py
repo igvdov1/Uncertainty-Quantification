@@ -59,7 +59,12 @@ def load_completed_qids_and_clean(out_path: Path) -> set[str]:
     return completed
 
 
-def process_one(model, tokenizer, device, q: Question, nli_scorer) -> dict | None:
+def process_one(model, tokenizer, device, q: Question, nli_scorer,
+                perturbations_override: dict | None = None) -> dict | None:
+    """perturbations_override — готовый блок perturbations (перефразы + их
+    ретривал + BM25) из прежнего дампа: пересборка генерации (rebuild_v2.py)
+    не генерирует перефразы заново, иначе ретривал по ним перестал бы
+    совпадать."""
     is_longform = q.source == "franq_longform"
     passage_texts = [p["text"] for p in (q.passages or [])]
 
@@ -99,12 +104,16 @@ def process_one(model, tokenizer, device, q: Question, nli_scorer) -> dict | Non
         "alignscore": alignscore,  # V1: NLI-заменитель, см. signals.py докстринг
     }
 
-    paraphrases_text = retrieval.generate_paraphrases(model, tokenizer, q.question, device, n=3)
-    paraphrases = [{"text": p, "topk_doc_ids": [], "topk_scores": []} for p in paraphrases_text]
-    # topk_doc_ids/scores для перефразов заполняются отдельным ретривал-проходом (runbook, шаг 2b)
+    if perturbations_override is not None:
+        paraphrases = perturbations_override.get("query_paraphrases", [])
+        retriever_alt = perturbations_override.get("retriever_alt", {})
+    else:
+        paraphrases_text = retrieval.generate_paraphrases(model, tokenizer, q.question, device, n=3)
+        paraphrases = [{"text": p, "topk_doc_ids": [], "topk_scores": []} for p in paraphrases_text]
+        # topk_doc_ids/scores для перефразов заполняются отдельным ретривал-проходом (runbook, шаг 2b)
 
-    retriever_alt = {"bm25": {"topk_doc_ids": [], "topk_scores": [], "top20_scores": [], "scores_raw": True}}
-    # заполняется из --bm25-output, см. runbook
+        retriever_alt = {"bm25": {"topk_doc_ids": [], "topk_scores": [], "top20_scores": [], "scores_raw": True}}
+        # заполняется из --bm25-output, см. runbook
 
     # long-form FRANQ пассажи не из ретривера (распарсены из текста) — у них нет score
     passages_top20_scores = [(p.get("score") or 0.0) for p in (q.passages or [])][:20]

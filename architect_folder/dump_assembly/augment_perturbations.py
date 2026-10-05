@@ -127,8 +127,15 @@ def cmd_generate(args: argparse.Namespace) -> None:
 
     from . import generation, retrieval
 
-    print(f"Loading paraphrase retrieval results from {args.paraphrase_retrieval}...")
-    para_retrieval = retrieval.read_retrieval_output(args.paraphrase_retrieval, top_n=TOP_N_PASSAGES)
+    if args.paraphrase_retrieval is not None:
+        print(f"Loading paraphrase retrieval results from {args.paraphrase_retrieval}...")
+        para_retrieval = retrieval.read_retrieval_output(args.paraphrase_retrieval, top_n=TOP_N_PASSAGES)
+    else:
+        # без текстов пассажей перефразов rag-ответы на перефразы не сгенерировать;
+        # closed-book ответы (memory-strength) от ретривала не зависят
+        print("ВНИМАНИЕ: --paraphrase-retrieval не задан — rag_answer/rag_samples перефразов "
+              "останутся пустыми, генерируются только cb_answer/cb_samples", file=sys.stderr)
+        para_retrieval = {}
 
     print(f"Loading model {args.model}...")
     dtype = getattr(torch, args.dtype)
@@ -186,7 +193,8 @@ def cmd_generate(args: argparse.Namespace) -> None:
                         p["rag_answer"] = rag_out["answer"]
                         p["rag_samples"] = rag_samples["samples"]
                     else:
-                        print(f"  [{i}] {pqid}: нет результата ретривала для перефраза", file=sys.stderr)
+                        if para_retrieval:  # без файла ретривала не шумим на каждый перефраз
+                            print(f"  [{i}] {pqid}: нет результата ретривала для перефраза", file=sys.stderr)
                         p["rag_answer"] = None
                         p["rag_samples"] = []
                 else:
@@ -218,7 +226,8 @@ def main() -> None:
 
     p3 = sub.add_parser("generate")
     p3.add_argument("--in", dest="in_path", required=True, type=Path)
-    p3.add_argument("--paraphrase-retrieval", required=True, type=Path)
+    p3.add_argument("--paraphrase-retrieval", type=Path, default=None,
+                    help="результат ретривала по перефразам; без него — только closed-book ответы на перефразы")
     p3.add_argument("--model", required=True)
     p3.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     p3.add_argument("--out", required=True, type=Path)
