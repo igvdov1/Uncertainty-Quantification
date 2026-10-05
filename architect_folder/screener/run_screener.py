@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import bootstrap, calibration, card_report, correlation, metrics, refusal, registry, schema
+from . import bootstrap, calibration, card_report, correlation, metrics, refusal, registry, schema, synthesis
 
 TARGETS = ("faithful", "factual")
 EXCLUDED = -1  # метка исключена из оценки (см. --faithful-exclude-refusals)
@@ -209,7 +209,7 @@ def cache_key(input_path: Path, sidecars: list[Path], faithful_exclude_refusals:
 
 def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusals: bool = False,
         cards: bool = False, calibrate: bool = False, built: tuple | None = None,
-        cards_only: list[str] | None = None) -> dict:
+        cards_only: list[str] | None = None, synth: bool = False) -> dict:
     """built — готовый результат build_signal_table_and_claims (из кэша);
     тогда records_iter не читается."""
     if built is None:
@@ -254,6 +254,8 @@ def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusa
         "card_report": cards_result,
         "calibration": {t: calibration.run_calibration(risk, l, aux, polarity) for t, l in labels_by_target.items()}
         if calibrate else None,
+        "synthesis": {t: synthesis.run_synthesis(risk, l, aux, n_boot=n_boot, seed=seed)
+                      for t, l in labels_by_target.items()} if synth else None,
         "metrics_table": metrics_table,
         "correlation": {"names": names, "matrix": corr},
         "paired_bootstrap_top2_factual": boot_result,
@@ -293,6 +295,9 @@ def _print_report(result: dict) -> None:
         print(f"\n!!! ПОДОЗРЕНИЕ НА УТЕЧКУ МЕТКИ: target={target}, {name} auroc={a:.3f} — "
               f"проверьте, не посчитана ли метка из этого сигнала")
 
+    for target, res in (result.get("synthesis") or {}).items():
+        synthesis.print_synthesis(target, res)
+
     for target, res in (result.get("calibration") or {}).items():
         calibration.print_calibration(target, res)
 
@@ -316,6 +321,8 @@ def main() -> None:
                              "для dump_pilot_v4, см. screener/refusal.py")
     parser.add_argument("--cache-dir", type=Path, default=None,
                         help="кэш таблицы сигналов: повторный запуск с тем же дампом/sidecar не перечитывает дамп")
+    parser.add_argument("--synthesis", action="store_true",
+                        help="ансамбли сигналов с честной CV-оценкой (screener/synthesis.py)")
     parser.add_argument("--cards-only", nargs="+", default=None,
                         help="с --cards: только карточки, id которых содержит одну из подстрок")
     parser.add_argument("--calibration", action="store_true",
@@ -350,7 +357,7 @@ def main() -> None:
 
     result = run(records_iter, n_boot=args.n_boot, seed=args.seed,
                  faithful_exclude_refusals=args.faithful_exclude_refusals, cards=args.cards,
-                 calibrate=args.calibration, built=built, cards_only=args.cards_only)
+                 calibrate=args.calibration, built=built, cards_only=args.cards_only, synth=args.synthesis)
     _print_report(result)
 
 

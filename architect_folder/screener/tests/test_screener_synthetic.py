@@ -186,3 +186,19 @@ def test_incremental_value_detects_orthogonal_signal():
     dup = incremental.incremental_value(risk, labels, "dup", n_boot=100)
     assert orth["NLL"]["delta"] > 0.08 and orth["NLL"]["ci"][0] > 0
     assert abs(dup["NLL"]["delta"]) < 0.02
+
+
+def test_synthesis_beats_single_signal_when_signals_are_complementary():
+    from screener import synthesis
+    rng = np.random.default_rng(0)
+    n = 300
+    a, b = rng.normal(size=n), rng.normal(size=n)
+    labels = (a + b + 0.5 * rng.normal(size=n) < 0).astype(int)
+    aux = {"form": np.array(["short"] * n), "split": np.array(["dev"] * 120 + ["test"] * 180)}
+    x = {"len_norm_rag": a, "orth": b}
+    p_one, _ = synthesis.oof(np.column_stack([a]), 1 - labels, n_repeats=2)
+    p_two, _ = synthesis.oof(np.column_stack([a, b]), 1 - labels, n_repeats=2)
+    assert synthesis.summarize(p_two, 1 - labels)["auroc"] > synthesis.summarize(p_one, 1 - labels)["auroc"] + 0.08
+    sel = synthesis.forward_select(["len_norm_rag", "orth", "noise"])
+    cols = sel(np.column_stack([a, b, rng.normal(size=n)]), 1 - labels)
+    assert cols[:2] == [0, 1] and 2 not in cols
