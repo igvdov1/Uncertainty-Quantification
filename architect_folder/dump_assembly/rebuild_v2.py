@@ -58,6 +58,55 @@ def question_from_record(r: dict, gold: dict[str, list[str]]):
                     passages=r["passages"], split=r["split"])
 
 
+def cmd_extract_input(args) -> None:
+    """Локально: лёгкий вход для rebuild — только short-form и только поля,
+    которые rebuild берёт из v4 (без hidden states / attention). Long-form не
+    пересобираются — их записи и строки sidecar-файлов склеиваются из v4 (merge)."""
+    keep = ("qid", "question", "source", "split", "passages", "passages_top20_scores", "perturbations")
+    n = 0
+    with open(args.out, "w") as fout:
+        for r in iter_jsonl(args.dump):
+            if r["source"] == LONGFORM:
+                continue
+            fout.write(json.dumps({k: r[k] for k in keep if k in r}) + "\n")
+            n += 1
+    print(f"Готово: {n} short-form записей -> {args.out}")
+
+
+def cmd_merge(args) -> None:
+    """Локально: v5 = long-form из v4 + short-form из пересборки, в порядке v4."""
+    short = {r["qid"]: r for r in iter_jsonl(args.short)}
+    n_long = n_short = 0
+    with open(args.out, "w") as fout:
+        for r in iter_jsonl(args.v4):
+            if r["source"] == LONGFORM:
+                r["prompt_version"] = "v1"
+                fout.write(json.dumps(r) + "\n")
+                n_long += 1
+            elif r["qid"] in short:
+                fout.write(json.dumps(short.pop(r["qid"])) + "\n")
+                n_short += 1
+            else:
+                print(f"  нет пересобранной записи для {r['qid']}", file=sys.stderr)
+    print(f"Готово: {n_long} long-form + {n_short} short-form -> {args.out}"
+          + (f"; лишних short-form: {len(short)}" if short else ""))
+
+
+def cmd_merge_sidecar(args) -> None:
+    """Sidecar v5 = строки long-form из sidecar v4 + строки из v5 (short-form)."""
+    longform = {r["qid"] for r in iter_jsonl(args.v4_dump_light)} if args.v4_dump_light else None
+    rows = {}
+    for r in iter_jsonl(args.v4_sidecar):
+        if r["qid"].startswith("franq_lf_") if longform is None else r["qid"] in longform:
+            rows[r["qid"]] = r
+    for r in iter_jsonl(args.v5_sidecar):
+        rows[r["qid"]] = r
+    with open(args.out, "w") as f:
+        for r in rows.values():
+            f.write(json.dumps(r) + "\n")
+    print(f"Готово: {len(rows)} строк -> {args.out}")
+
+
 def cmd_export_gold(args) -> None:
     from .questions import build_pilot_question_set
     qs = build_pilot_question_set(args.franq_dataset_dir, args.dev_size, args.test_size, args.seed)
@@ -131,6 +180,24 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", required=True, type=Path)
     p.set_defaults(fn=cmd_export_gold)
+
+    p = sub.add_parser("extract-input")
+    p.add_argument("--dump", required=True, type=Path)
+    p.add_argument("--out", required=True, type=Path)
+    p.set_defaults(fn=cmd_extract_input)
+
+    p = sub.add_parser("merge")
+    p.add_argument("--v4", required=True, type=Path)
+    p.add_argument("--short", required=True, type=Path)
+    p.add_argument("--out", required=True, type=Path)
+    p.set_defaults(fn=cmd_merge)
+
+    p = sub.add_parser("merge-sidecar")
+    p.add_argument("--v4-sidecar", required=True, type=Path)
+    p.add_argument("--v5-sidecar", required=True, type=Path)
+    p.add_argument("--v4-dump-light", type=Path, default=None, help="по умолчанию long-form = qid franq_lf_*")
+    p.add_argument("--out", required=True, type=Path)
+    p.set_defaults(fn=cmd_merge_sidecar)
 
     p = sub.add_parser("rebuild")
     p.add_argument("--in", dest="in_path", required=True, type=Path)

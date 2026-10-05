@@ -57,6 +57,6 @@ def test_cp_internal_report_runs():
         v = rng.normal(size=16) + 2 * (1 - lab)
         feats.append({"qid": f"q{i}", "split": split, "source": "nq", "label_factual": lab,
                       "len_norm_rag": float(rng.normal() + (1 - lab)), "mean_rag": v})
-    rep = lc.cp_internal_report(feats, alpha=0.3)
+    rep = lc.cp_internal_report(feats, alphas=(0.3,))
     assert rep["n"] == {"A": 40, "B": 40, "test": 80}
     assert set(rep) >= {"hidden (Махаланобис)", "logprob (NLL)"}

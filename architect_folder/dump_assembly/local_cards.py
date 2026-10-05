@@ -134,7 +134,7 @@ def compute(features: list[dict]) -> tuple[list[dict], dict]:
     return rows, report
 
 
-def cp_internal_report(features: list[dict], alpha: float = 0.3, seed: int = 0) -> dict:
+def cp_internal_report(features: list[dict], alphas: tuple = (0.3, 0.4, 0.45), seed: int = 0) -> dict:
     """cp-internal-representations: конформный отбор ответов с нонконформностью
     по внутренним представлениям (Махаланобис среднего hidden state) против
     нонконформности по логпробам (NLL). Трёхчастный сплит: dev short-form
@@ -158,10 +158,12 @@ def cp_internal_report(features: list[dict], alpha: float = 0.3, seed: int = 0) 
                                  md.score(np.stack([f["mean_rag"] for f in test]))),
         "logprob (NLL)": (np.array([f["len_norm_rag"] for f in part_b]), np.array([f["len_norm_rag"] for f in test])),
     }
-    rep = {"alpha": alpha, "n": {"A": len(part_a), "B": len(part_b), "test": len(test)}}
+    from screener.metrics import auroc
+    rep = {"n": {"A": len(part_a), "B": len(part_b), "test": len(test)}}
     for name, (sb, st) in scores.items():
-        tau = ltt_threshold(sb, err_b, alpha)
-        rep[name] = selective(st, err_t, tau)
+        rep[name] = {"auroc_test": auroc(st, 1 - err_t)}
+        for a in alphas:
+            rep[name][f"alpha={a}"] = selective(st, err_t, ltt_threshold(sb, err_b, a))
     return rep
 
 
