@@ -212,6 +212,10 @@ def make_record(rng: np.random.Generator, qid: str, split: str) -> dict:
                 "sre_entropy_greedy": float(np.clip(1.4 * (1 - quality) + rng.normal(0, 0.1), 0, None)),
                 "sre_entropy_all": float(np.clip(2.5 * (1 - quality) + rng.normal(0, 0.1), 0, None)),
                 "ctx_sufficiency": float(np.clip(quality + rng.normal(0, 0.1), 0, 1)),
+                **{k: float(np.clip(1 - quality + rng.normal(0, 0.1), 0, None)) for k in (
+                    "intrygue_minmax_k5", "intrygue_mean_k5", "intrygue_tuned", "redeep", "lumina", "lumina_ipr",
+                    "ats_nll", "ats_max_nll", "ats_entropy", "tad", "hack_dontknow", "src_entropy", "src_given_sem")},
+                "lumina_mmd": float(np.clip(quality + rng.normal(0, 0.1), 0, None)),
             },
         },
 
