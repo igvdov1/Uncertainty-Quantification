@@ -202,3 +202,16 @@ def test_synthesis_beats_single_signal_when_signals_are_complementary():
     sel = synthesis.forward_select(["len_norm_rag", "orth", "noise"])
     cols = sel(np.column_stack([a, b, rng.normal(size=n)]), 1 - labels)
     assert cols[:2] == [0, 1] and 2 not in cols
+
+
+def test_task_dependent_detects_group_difference():
+    from screener import task_dependent as td
+    rng = np.random.default_rng(0)
+    n = 400
+    sources = np.array(["popqa"] * 100 + ["nq"] * 300)
+    labels = rng.integers(0, 2, n)
+    s = rng.normal(size=n)
+    s[100:] -= 1.5 * labels[100:]          # сигнал работает только вне PopQA
+    rep = td.task_dependent_report({"uplift_len_norm": s}, labels, sources, n_boot=200)
+    d, lo, hi = rep["popqa_vs_rest"]["uplift_len_norm"]
+    assert d < 0 and hi < 0

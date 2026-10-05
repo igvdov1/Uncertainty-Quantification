@@ -46,3 +46,17 @@ def test_compute_fits_on_dev_and_scores_only_short_test():
     s = {r["qid"]: r["signals"] for r in rows}
     assert s["t1"]["sep_rag"] > s["t0"]["sep_rag"]
     assert s["t0"]["md_diff"] == pytest.approx(s["t0"]["md_rag"] - s["t0"]["md_cb"])
+
+
+def test_cp_internal_report_runs():
+    rng = np.random.default_rng(3)
+    feats = []
+    for i in range(160):
+        lab = i % 2
+        split = "dev" if i < 80 else "test"
+        v = rng.normal(size=16) + 2 * (1 - lab)
+        feats.append({"qid": f"q{i}", "split": split, "source": "nq", "label_factual": lab,
+                      "len_norm_rag": float(rng.normal() + (1 - lab)), "mean_rag": v})
+    rep = lc.cp_internal_report(feats, alpha=0.3)
+    assert rep["n"] == {"A": 40, "B": 40, "test": 80}
+    assert set(rep) >= {"hidden (Махаланобис)", "logprob (NLL)"}

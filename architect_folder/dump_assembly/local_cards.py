@@ -89,7 +89,10 @@ def fit_sep(x: np.ndarray, se: np.ndarray) -> tuple:
 # ---- сбор признаков из дампа ------------------------------------------------
 
 def record_features(r: dict) -> dict:
-    out = {"qid": r["qid"], "split": r["split"], "source": r["source"]}
+    lab = r.get("label_factual")
+    out = {"qid": r["qid"], "split": r["split"], "source": r["source"],
+           "label_factual": None if lab is None else int(lab),
+           "len_norm_rag": registry.len_norm_nll(r, "rag")}
     for mode, suf in MODES:
         h = np.asarray(r[mode]["hidden_states_last"], dtype=np.float32)
         out[f"mean_{suf}"] = h.mean(axis=0)
@@ -131,6 +134,37 @@ def compute(features: list[dict]) -> tuple[list[dict], dict]:
     return rows, report
 
 
+def cp_internal_report(features: list[dict], alpha: float = 0.3, seed: int = 0) -> dict:
+    """cp-internal-representations: конформный отбор ответов с нонконформностью
+    по внутренним представлениям (Махаланобис среднего hidden state) против
+    нонконформности по логпробам (NLL). Трёхчастный сплит: dev short-form
+    делится пополам — A строит плотность hidden states, B калибрует порог
+    (Learn-then-Test, screener/calibration.py); оценка на test.
+    Критерий убийства карточки: покрытие (доля отвеченных) и ошибка среди
+    отвеченных не отличаются между двумя нонконформностями."""
+    from screener.calibration import ltt_threshold, selective
+    short = [f for f in features if f["source"] != LONGFORM and f["label_factual"] is not None]
+    dev = [f for f in short if f["split"] == "dev"]
+    test = [f for f in short if f["split"] == "test"]
+    rng = np.random.default_rng(seed)
+    idx = rng.permutation(len(dev))
+    part_a = [dev[i] for i in idx[: len(dev) // 2]]
+    part_b = [dev[i] for i in idx[len(dev) // 2:]]
+    md = Mahalanobis().fit(np.stack([f["mean_rag"] for f in part_a]))
+    err_b = np.array([1 - f["label_factual"] for f in part_b])
+    err_t = np.array([1 - f["label_factual"] for f in test])
+    scores = {
+        "hidden (Махаланобис)": (md.score(np.stack([f["mean_rag"] for f in part_b])),
+                                 md.score(np.stack([f["mean_rag"] for f in test]))),
+        "logprob (NLL)": (np.array([f["len_norm_rag"] for f in part_b]), np.array([f["len_norm_rag"] for f in test])),
+    }
+    rep = {"alpha": alpha, "n": {"A": len(part_a), "B": len(part_b), "test": len(test)}}
+    for name, (sb, st) in scores.items():
+        tau = ltt_threshold(sb, err_b, alpha)
+        rep[name] = selective(st, err_t, tau)
+    return rep
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dump", required=True, type=Path)
@@ -144,6 +178,7 @@ def main() -> None:
         records = run_screener.attach_sidecars(records, run_screener.load_sidecars(args.sidecar))
     features = [record_features(r) for r in records]
     rows, report = compute(features)
+    report["cp_internal"] = cp_internal_report(features)
     with open(args.out, "w") as f:
         for row in rows:
             f.write(json.dumps(row) + "\n")
