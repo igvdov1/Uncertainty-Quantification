@@ -201,9 +201,13 @@ def cmd_run(args) -> None:
             if (n + 1) % 25 == 0:
                 fout.flush()
                 print(f"  {n + 1}/{len(todo)}  жадный = top-1 (short-form): {match / max(total, 1):.3f}")
-    rate = match / max(total, 1)
-    print(f"Готово -> {args.out}\nЖадный токен = top-1 на short-form: {rate:.3f}"
-          + ("" if rate > 0.95 else "  <-- НИЗКО: промпт или модель не совпадают со сборкой дампа"))
+    if total == 0:
+        # только long-form: их текст teacher-forced, а не argmax модели — совпадения и не ждём
+        print(f"Готово -> {args.out}\nShort-form в этом прогоне не было — проверка top-1 не применима")
+    else:
+        rate = match / total
+        print(f"Готово -> {args.out}\nЖадный токен = top-1 на short-form: {rate:.3f}"
+              + ("" if rate > 0.95 else "  <-- НИЗКО: промпт или модель не совпадают со сборкой дампа"))
 
 
 def main() -> None:
