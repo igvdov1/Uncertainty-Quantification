@@ -208,7 +208,8 @@ def cache_key(input_path: Path, sidecars: list[Path], faithful_exclude_refusals:
 
 
 def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusals: bool = False,
-        cards: bool = False, calibrate: bool = False, built: tuple | None = None) -> dict:
+        cards: bool = False, calibrate: bool = False, built: tuple | None = None,
+        cards_only: list[str] | None = None) -> dict:
     """built — готовый результат build_signal_table_and_claims (из кэша);
     тогда records_iter не читается."""
     if built is None:
@@ -244,8 +245,8 @@ def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusa
         for g in ("short", "long") if (form == g).sum() >= LEAKAGE_MIN_GROUP
     }
 
-    cards_result = card_report.card_report(risk, labels_by_target, form == "short", n_boot=n_boot, seed=seed) \
-        if cards else None
+    cards_result = card_report.card_report(risk, labels_by_target, form == "short", n_boot=n_boot, seed=seed,
+                                           only=cards_only) if cards else None
 
     return {
         "n_records": len(qids),
@@ -315,6 +316,8 @@ def main() -> None:
                              "для dump_pilot_v4, см. screener/refusal.py")
     parser.add_argument("--cache-dir", type=Path, default=None,
                         help="кэш таблицы сигналов: повторный запуск с тем же дампом/sidecar не перечитывает дамп")
+    parser.add_argument("--cards-only", nargs="+", default=None,
+                        help="с --cards: только карточки, id которых содержит одну из подстрок")
     parser.add_argument("--calibration", action="store_true",
                         help="этап калибровки: Platt/изотоника, ECE/Brier, конформные гарантии (screener/calibration.py)")
     parser.add_argument("--cards", action="store_true",
@@ -347,7 +350,7 @@ def main() -> None:
 
     result = run(records_iter, n_boot=args.n_boot, seed=args.seed,
                  faithful_exclude_refusals=args.faithful_exclude_refusals, cards=args.cards,
-                 calibrate=args.calibration, built=built)
+                 calibrate=args.calibration, built=built, cards_only=args.cards_only)
     _print_report(result)
 
 

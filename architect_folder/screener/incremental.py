@@ -43,6 +43,17 @@ def oof_risk(features: np.ndarray, labels: np.ndarray, seed: int = 0) -> np.ndar
     return out / N_REPEATS
 
 
+_BASE_CACHE: dict[tuple, np.ndarray] = {}
+
+
+def _base_oof(risk: dict[str, np.ndarray], base: list[str], m: np.ndarray, lab: np.ndarray, seed: int) -> np.ndarray:
+    """OOF базы одинаков для всех сигналов с той же маской — считаем один раз."""
+    key = (tuple(base), m.tobytes(), lab.tobytes(), seed, *(risk[c][m].tobytes() for c in base))
+    if key not in _BASE_CACHE:
+        _BASE_CACHE[key] = oof_risk(np.column_stack([risk[c][m] for c in base]), lab, seed)
+    return _BASE_CACHE[key]
+
+
 def incremental_value(risk: dict[str, np.ndarray], labels: np.ndarray, signal: str,
                       n_boot: int = 1000, seed: int = 0) -> dict[str, dict] | None:
     cols = {c for base in BASES.values() for c in base} | {signal}
@@ -58,7 +69,7 @@ def incremental_value(risk: dict[str, np.ndarray], labels: np.ndarray, signal: s
     for name, base in BASES.items():
         if signal in base:
             continue
-        r_base = oof_risk(np.column_stack([risk[c][m] for c in base]), lab, seed)
+        r_base = _base_oof(risk, base, m, lab, seed)
         r_full = oof_risk(np.column_stack([risk[c][m] for c in base + [signal]]), lab, seed)
         bs = bootstrap.paired_bootstrap(r_full, r_base, lab, metrics.auroc, n_boot=n_boot, seed=seed)
         out[name] = {"base": metrics.auroc(r_base, lab), "with": metrics.auroc(r_full, lab),

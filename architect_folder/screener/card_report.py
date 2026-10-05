@@ -122,9 +122,12 @@ def signal_row(risk: dict[str, np.ndarray], labels: np.ndarray, name: str, branc
 
 
 def card_report(risk: dict[str, np.ndarray], labels_by_target: dict[str, np.ndarray], form_mask: np.ndarray,
-                n_boot: int = 1000, seed: int = 0) -> dict:
+                n_boot: int = 1000, seed: int = 0, only: list[str] | None = None) -> dict:
+    """only — подстроки id карточек; без него — все карточки."""
     out: dict = {}
     for card, sigs in CARDS.items():
+        if only and not any(o in card for o in only):
+            continue
         out[card] = {}
         for target, labels in labels_by_target.items():
             sub = {k: v[form_mask] for k, v in risk.items()}
