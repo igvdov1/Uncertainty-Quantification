@@ -171,3 +171,13 @@ def test_gpu_cards_question_variants_prepend_question():
     sig = gc.card_signals(rec, contra, contra, lambda *a: [])
     assert sig["ncp_q_rag"] == 1.0
     assert ("Which volcano? Kilimanjaro", "Which volcano? Kibo") in seen
+
+
+def test_embedding_shards_skip_faiss_index_files(tmp_path):
+    import pickle
+    for i in range(2):
+        pickle.dump(([f"{i}a", f"{i}b"], np.zeros((2, 4), dtype=np.float16)), open(tmp_path / f"passages_0{i}", "wb"))
+    (tmp_path / "index.faiss").write_bytes(b"not a pickle")
+    (tmp_path / "index_meta.faiss").write_bytes(b"not a pickle")
+    shards = list(streaming_retrieval.iter_embedding_shards(str(tmp_path)))
+    assert [ids for ids, _ in shards] == [["0a", "0b"], ["1a", "1b"]]

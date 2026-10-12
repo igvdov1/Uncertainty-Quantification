@@ -132,7 +132,9 @@ def iter_embedding_shards(source: str):
         with tarfile.open(source, mode="r|") as tar:
             yield from _iter_tar(tar)
     else:
-        files = sorted(glob.glob(source if any(c in source for c in "*?[") else str(Path(source) / "*")))
+        # в каталоге только шарды passages_* (рядом может лежать index.faiss / index_meta.faiss,
+        # сохранённый contriever/passage_retrieval.py, — это не pickle (ids, embeddings))
+        files = sorted(glob.glob(source if any(c in source for c in "*?[") else str(Path(source) / "passages_*")))
         if not files:
             raise FileNotFoundError(f"нет файлов эмбеддингов по {source}")
         for fn in files:
@@ -144,7 +146,7 @@ def iter_embedding_shards(source: str):
 
 def _iter_tar(tar):
     for member in tar:
-        if member.isfile():
+        if member.isfile() and Path(member.name).name.startswith("passages_"):
             ids, emb = pickle.load(tar.extractfile(member))
             print(f"  шард {member.name}: {len(ids)}")
             yield ids, emb
