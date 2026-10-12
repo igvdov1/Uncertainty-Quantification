@@ -7,8 +7,9 @@
 #   GPU >= 32 ГБ; доступ к meta-llama/Llama-3.1-8B-Instruct на HF (huggingface-cli login или HF_TOKEN);
 #   диск: корпус Contriever ~70 ГБ (если RETRIEVAL_SOURCE=disk) + дампы ~15 ГБ на 8000 вопросов;
 #   pip install torch transformers accelerate sentencepiece protobuf datasets lettucedetect scikit-learn regex requests
-#   для BM25 (карточка retriever-disagreement): pip install pyserini + Java 21 (индекс wikipedia-dpr ~10 ГБ
-#   скачается сам); без pyserini шаг пропускается с предупреждением.
+#   для BM25 (карточка retriever-disagreement): pyserini + Java 21 — в текущем окружении или в отдельном
+#   (PYSERINI_PY=путь/к/python; по умолчанию ищется ../../pyserini_env рядом с репозиторием); индекс
+#   wikipedia-dpr скачается сам; без pyserini шаг пропускается с предупреждением.
 #
 # Параметры (переменные окружения):
 #   PER_SOURCE=2000 DEV_FRAC=0.4   — размер выборки на источник и доля dev
@@ -83,15 +84,26 @@ run python -m dump_assembly.run_assembly --model "$MODEL" --questions questions.
     --skip-attention-head --out dump_base.jsonl
 
 DUMP_IN=dump_base.jsonl
-if [[ "$BM25" == "auto" ]] && ! python -c "import pyserini" 2>/dev/null; then
-    echo "  ВНИМАНИЕ: pyserini не установлен — BM25 пропущен (карточка retriever-disagreement будет пустой)" \
+# питон с pyserini: явный PYSERINI_PY, иначе отдельное окружение pyserini_env рядом с репозиторием, иначе текущий
+if [[ -z "${PYSERINI_PY:-}" ]]; then
+    PYSERINI_PY=python
+    for env in ../../pyserini_env ../pyserini_env; do
+        [[ -x "$env/bin/python" ]] && { PYSERINI_PY="$(cd "$env" && pwd)/bin/python"; break; }
+    done
+fi
+# Java из того же окружения (conda-окружение с openjdk), если JAVA_HOME не задан
+PY_ENV_DIR="$(dirname "$(dirname "$(command -v "$PYSERINI_PY")")")"
+if [[ -z "${JAVA_HOME:-}" && -x "$PY_ENV_DIR/bin/java" ]]; then export JAVA_HOME="$PY_ENV_DIR"; fi
+if [[ "$BM25" == "auto" ]] && ! "$PYSERINI_PY" -c "import pyserini" 2>/dev/null; then
+    echo "  ВНИМАНИЕ: pyserini не найден ($PYSERINI_PY) — BM25 пропущен (карточка retriever-disagreement будет пустой)" \
         | tee -a c4_log.txt
     BM25=0
 fi
 if [[ "$BM25" != "0" ]]; then
     log "6/16 BM25 (retriever-disagreement)"
     if ! done_step dump_bm25.jsonl || [[ $(wc -l < dump_bm25.jsonl) -ne $(wc -l < dump_base.jsonl) ]]; then
-        run python -m dump_assembly.augment_perturbations fill-bm25 --in dump_base.jsonl --out dump_bm25.jsonl \
+        echo "  pyserini: $PYSERINI_PY" | tee -a c4_log.txt
+        run "$PYSERINI_PY" -m dump_assembly.augment_perturbations fill-bm25 --in dump_base.jsonl --out dump_bm25.jsonl \
             --pyserini-index wikipedia-dpr
     fi
     DUMP_IN=dump_bm25.jsonl
