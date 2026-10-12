@@ -248,6 +248,24 @@ def generate_greedy(model, tokenizer, question: str, passages: list[str] | None,
 
 
 @torch.no_grad()
+def generate_answer(model, tokenizer, question: str, passages: list[str] | None, device,
+                    prompt_version: str | None = None) -> dict:
+    """Облегчённый жадный ответ: тот же промпт и та же генерация, что у
+    generate_greedy, но без attention / hidden states / top-k — только текст
+    и логпробы токенов. Для ответов на перефразы и ячеек H2
+    (augment_perturbations), где остальные поля не используются, а снимать
+    attention по всем слоям на каждом шаге — основная часть стоимости."""
+    prompt_ids, _ = build_prompt_ids(tokenizer, question, passages, prompt_version)
+    input_ids = torch.tensor([prompt_ids], device=device)
+    out = model.generate(input_ids=input_ids, attention_mask=torch.ones_like(input_ids),
+                         max_new_tokens=MAX_NEW_TOKENS, do_sample=False,
+                         output_scores=True, return_dict_in_generate=True)
+    gen_ids = out.sequences[0, len(prompt_ids):]
+    logprobs = [float(torch.log_softmax(out.scores[t][0].float(), dim=-1)[gen_ids[t]]) for t in range(len(gen_ids))]
+    return {"answer": tokenizer.decode(gen_ids, skip_special_tokens=True), "token_logprobs": logprobs}
+
+
+@torch.no_grad()
 def teacher_force(model, tokenizer, question: str, passages: list[str] | None, target_text: str, device) -> dict:
     """Прогоняет ГОТОВЫЙ target_text через модель одним forward-проходом.
     Даёт те же поля, что generate_greedy, но без вызова .generate() — для

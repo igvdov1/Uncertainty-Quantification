@@ -140,9 +140,8 @@ def cmd_generate(args: argparse.Namespace) -> None:
     print(f"Loading model {args.model}...")
     dtype = getattr(torch, args.dtype)
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=dtype, device_map="auto", attn_implementation="eager",
-    )
+    # attention здесь не снимается (generation.generate_answer) — быстрый SDPA вместо eager
+    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=dtype, device_map="auto")
     model.eval()
     device = next(model.parameters()).device
 
@@ -172,7 +171,7 @@ def cmd_generate(args: argparse.Namespace) -> None:
                 para_text = p["text"]
 
                 # closed-book — для всех источников (память модели, RAG не при чём)
-                cb_out = generation.generate_greedy(model, tokenizer, para_text, None, device, prompt_version=pv)
+                cb_out = generation.generate_answer(model, tokenizer, para_text, None, device, prompt_version=pv)
                 cb_samples = generation.sample(model, tokenizer, para_text, None, device,
                                                 n_samples=N_SAMPLES_PARAPHRASE, prompt_version=pv)
                 p["cb_answer"] = cb_out["answer"]
@@ -187,7 +186,7 @@ def cmd_generate(args: argparse.Namespace) -> None:
                         p["topk_scores"] = [c["score"] for c in ctxs]
                         p["topk_is_golden"] = [c["is_golden"] for c in ctxs]
                         passage_texts = [c["text"] for c in ctxs]
-                        rag_out = generation.generate_greedy(model, tokenizer, para_text, passage_texts, device,
+                        rag_out = generation.generate_answer(model, tokenizer, para_text, passage_texts, device,
                                                              prompt_version=pv)
                         rag_samples = generation.sample(model, tokenizer, para_text, passage_texts, device,
                                                          n_samples=N_SAMPLES_PARAPHRASE, prompt_version=pv)
@@ -200,7 +199,7 @@ def cmd_generate(args: argparse.Namespace) -> None:
                             orig_texts = [x["text"] for x in r["passages"]]
                             for key, qtext, ptexts in (("para_q_orig_ctx", para_text, orig_texts),
                                                        ("orig_q_para_ctx", r["question"], passage_texts)):
-                                out = generation.generate_greedy(model, tokenizer, qtext, ptexts, device,
+                                out = generation.generate_answer(model, tokenizer, qtext, ptexts, device,
                                                                  prompt_version=pv)
                                 p[key] = {"answer": out["answer"], "token_logprobs": out["token_logprobs"]}
                     else:
