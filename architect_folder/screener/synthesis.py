@@ -24,17 +24,18 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import QuantileTransformer
 
-from . import bootstrap, metrics
+from . import baselines, bootstrap, metrics
 
 N_SPLITS, N_REPEATS = 5, 10
 
 CONFLICT = ["ncp_cross", "ncp_cb", "ccp_diff", "mem_entropy_all", "uplift_len_norm"]
+_R, _L = baselines.RULER, baselines.LENGTH
 SETS: dict[str, list[str]] = {
-    "A: NLL": ["len_norm_rag"],
-    "B: NLL+длина": ["len_norm_rag", "mean_sample_len_rag"],
-    "C: B+ctx_sufficiency": ["len_norm_rag", "mean_sample_len_rag", "ctx_sufficiency"],
-    "D: C+конфликт знаний": ["len_norm_rag", "mean_sample_len_rag", "ctx_sufficiency"] + CONFLICT,
-    "бюджет: NLL+длина ответа+ctx_sufficiency": ["len_norm_rag", "answer_len_rag", "ctx_sufficiency"],
+    "A: NLL": [_R],
+    "B: NLL+длина": [_R, _L],
+    "C: B+ctx_sufficiency": [_R, _L, "ctx_sufficiency"],
+    "D: C+конфликт знаний": [_R, _L, "ctx_sufficiency"] + CONFLICT,
+    "бюджет: NLL+длина ответа+ctx_sufficiency": [_R, "answer_len_rag", "ctx_sufficiency"],
 }
 # в «всё сразу» и отбор не берём: оракулы/дубли и подогнанные на dev (у них нет dev-значений)
 EXCLUDE_FROM_POOL = {"mean_nll_rag", "mean_nll_cb", "uplift_mean_nll"}
@@ -82,11 +83,17 @@ def _inner_auc(x: np.ndarray, y: np.ndarray) -> float:
     return metrics.auroc(p, 1 - y)
 
 
-def summarize(p_err: np.ndarray, y_err: np.ndarray) -> dict:
-    order = np.argsort(p_err)
-    half = order[: len(order) // 2]
-    return {"auroc": metrics.auroc(p_err, 1 - y_err), "brier": float(np.mean((p_err - y_err) ** 2)),
-            "err_at_50": float(y_err[half].mean())}
+def summarize(p_err: np.ndarray, y_err: np.ndarray, refusal: np.ndarray | None = None) -> dict:
+    """refusal — маска отказов: для selective-кривой всей системы (C9 §2) им
+    присваивается максимальный риск — отказ никогда не «отвечается» раньше
+    содержательного ответа."""
+    out = {"auroc": metrics.auroc(p_err, 1 - y_err), "brier": float(np.mean((p_err - y_err) ** 2))}
+    sys_risk = p_err if refusal is None else np.where(refusal, 2.0, p_err)
+    order = np.argsort(sys_risk, kind="stable")
+    for c in (50, 70):
+        out[f"err_at_{c}"] = float(y_err[order[: int(len(order) * c / 100)]].mean())
+    out["aurc"] = metrics.aurc(sys_risk, 1 - y_err)
+    return out
 
 
 def run_synthesis(risk: dict[str, np.ndarray], labels: np.ndarray, aux: dict, n_boot: int = 1000,
@@ -96,16 +103,23 @@ def run_synthesis(risk: dict[str, np.ndarray], labels: np.ndarray, aux: dict, n_
                   if n not in EXCLUDE_FROM_POOL and not np.isnan(v[short]).any() and np.std(v[short]) > 0)
     y = (1 - labels[short]).astype(int)
     split = aux["split"][short]
-    res: dict = {"n": int(short.sum()), "pool": pool, "sets": {}}
+    refusal = None
+    sets = dict(SETS)
+    if baselines.REFUSAL in pool:
+        refusal = risk[baselines.REFUSAL][short] > 0.5
+        sets["A+отказ: NLL+флаг отказа"] = [baselines.RULER, baselines.REFUSAL]
+    res: dict = {"n": int(short.sum()), "pool": pool, "sets": {},
+                 "n_refusals": int(refusal.sum()) if refusal is not None else 0}
+    summarize_ = lambda p: summarize(p, y, refusal)
 
     preds = {}
-    for name, cols in SETS.items():
+    for name, cols in sets.items():
         if any(c not in pool for c in cols):
             res["sets"][name] = {"missing": [c for c in cols if c not in pool]}
             continue
         x = np.column_stack([risk[c][short] for c in cols])
         preds[name], _ = oof(x, y, seed)
-        res["sets"][name] = summarize(preds[name], y)
+        res["sets"][name] = summarize_(preds[name])
         # dev -> test
         d, t = split == "dev", split == "test"
         if d.sum() < 50 or t.sum() < 50:
@@ -117,16 +131,16 @@ def run_synthesis(risk: dict[str, np.ndarray], labels: np.ndarray, aux: dict, n_
 
     x_all = np.column_stack([risk[c][short] for c in pool])
     preds["E: всё сразу"], _ = oof(x_all, y, seed)
-    res["sets"]["E: всё сразу"] = summarize(preds["E: всё сразу"], y) | {"k": len(pool)}
+    res["sets"]["E: всё сразу"] = summarize_(preds["E: всё сразу"]) | {"k": len(pool)}
 
-    nll_first = ["len_norm_rag"] + [c for c in pool if c != "len_norm_rag"]
+    nll_first = [baselines.RULER] + [c for c in pool if c != baselines.RULER]
     x_sel = np.column_stack([risk[c][short] for c in nll_first])
     preds["F: отбор внутри CV"], chosen = oof(x_sel, y, seed, n_repeats=2, select=forward_select(nll_first))
     freq: dict[str, int] = {}
     for cols in chosen:
         for j in cols:
             freq[nll_first[j]] = freq.get(nll_first[j], 0) + 1
-    res["sets"]["F: отбор внутри CV"] = summarize(preds["F: отбор внутри CV"], y) | {
+    res["sets"]["F: отбор внутри CV"] = summarize_(preds["F: отбор внутри CV"]) | {
         "selected_freq": {k: v / len(chosen) for k, v in sorted(freq.items(), key=lambda kv: -kv[1])},
         "mean_k": float(np.mean([len(c) for c in chosen]))}
 
@@ -143,12 +157,15 @@ def run_synthesis(risk: dict[str, np.ndarray], labels: np.ndarray, aux: dict, n_
 
 def print_synthesis(target: str, res: dict) -> None:
     print(f"\n=== Синтез, target={target} (short-form, n={res['n']}; OOF {N_SPLITS}x{N_REPEATS}) ===")
-    print(f"  пул для E/F: {len(res['pool'])} сигналов")
+    print(f"  пул для E/F: {len(res['pool'])} сигналов"
+          + (f"; отказов {res['n_refusals']} — в ошибке@c% и AURC им дан максимальный риск"
+             if res.get("n_refusals") else ""))
     for name, s in res["sets"].items():
         if "missing" in s:
             print(f"  {name:42s} нет сигналов: {s['missing']}")
             continue
-        line = f"  {name:42s} AUROC={s['auroc']:.3f}  Brier={s['brier']:.3f}  ошибка@50%={s['err_at_50']:.3f}"
+        line = (f"  {name:42s} AUROC={s['auroc']:.3f}  Brier={s['brier']:.3f}  ошибка@50%={s['err_at_50']:.3f}"
+                f"  @70%={s['err_at_70']:.3f}  AURC={s['aurc']:.3f}")
         for ref in ("A: NLL", "B: NLL+длина"):
             if f"vs {ref}" in s:
                 d, lo, hi = s[f"vs {ref}"]

@@ -25,7 +25,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.stats import spearmanr
 
-from . import bootstrap, incremental, metrics
+from . import baselines, bootstrap, incremental, metrics
 
 ALIVE_DELTA, ALIVE_P, POOL_DELTA, POOL_CORR = 0.02, 0.9, -0.03, 0.5
 # добавочная ценность — тысячи обучений логрегрессии на ~50 сигналов; тесты на
@@ -55,10 +55,14 @@ CARDS: dict[str, list[tuple[str, str]]] = {
     "source-clustering-entropy": [("src_entropy", "rag"), ("src_given_sem", "rag")],
     "semantic-entropy-probes": [("sep_rag", "rag"), ("sep_cb", "cb")],
     "ccp-faithful-substitution": [("ccp_rag", "rag"), ("ccp_mean_rag", "rag"), ("ccp_cb", "cb"),
-                                  ("ccp_mean_cb", "cb"), ("ccp_diff", "rag")],
+                                  ("ccp_mean_cb", "cb"), ("ccp_diff", "rag"),
+                                  ("ccp_word_rag", "rag"), ("ccp_word_mean_rag", "rag"), ("ccp_word_cb", "cb"),
+                                  ("ccp_first_rag", "rag"), ("ccp_first_cb", "cb"), ("ccp_word_diff", "rag")],
     "semantic-entropy (бейзлайн брифа)": [("semantic_entropy_rag", "rag"), ("semantic_entropy_cb", "cb")],
-    "selfcheckgpt-consistency": [("selfcheck_nli_rag", "rag"), ("selfcheck_nli_cb", "cb")],
-    "non-contradiction-probability": [("ncp_rag", "rag"), ("ncp_cb", "cb"), ("ncp_cross", "rag")],
+    "selfcheckgpt-consistency": [("selfcheck_nli_rag", "rag"), ("selfcheck_nli_cb", "cb"),
+                                 ("selfcheck_nli_q_rag", "rag"), ("selfcheck_nli_q_cb", "cb")],
+    "non-contradiction-probability": [("ncp_rag", "rag"), ("ncp_cb", "cb"), ("ncp_cross", "rag"),
+                                      ("ncp_q_rag", "rag"), ("ncp_q_cb", "cb"), ("ncp_q_cross", "rag")],
     "lettucedetect-lightweight": [("lettuce_max", "rag"), ("lettuce_mean", "rag"), ("lettuce_frac", "rag")],
 }
 
@@ -117,18 +121,23 @@ def signal_row(risk: dict[str, np.ndarray], labels: np.ndarray, name: str, branc
     s = risk.get(name)
     if s is None:
         return None
-    nll, length = risk["len_norm_rag"], risk["mean_sample_len_rag"]
+    nll, length = risk[baselines.RULER], risk[baselines.LENGTH]
     m = ~(np.isnan(s) | np.isnan(nll)) & (labels >= 0)
     if m.sum() < 10 or len(set(labels[m])) < 2:
         return None
     bs = bootstrap.paired_bootstrap(s[m], nll[m], labels[m], metrics.auroc, n_boot=n_boot, seed=seed)
     a, a_nll, a_len = (metrics.auroc(x[m], labels[m]) for x in (s, nll, length))
     rho_nll, rho_len = _rho(s[m], nll[m]), _rho(s[m], length[m])
+    inc = incremental.incremental_value(risk, labels, name, n_boot=n_boot, seed=seed) if WITH_INCREMENTAL else None
+    strong = (inc or {}).get(baselines.STRONG_BASE)
     return {"signal": name, "n": int(m.sum()), "auroc": a, "nll": a_nll, "delta": a - a_nll,
             "ci": (bs["ci_low"], bs["ci_high"]), "p_better": bs["p_a_better"], "len": a_len,
             "rho_nll": rho_nll, "rho_len": rho_len, "verdict": verdict(a - a_nll, bs["p_a_better"], rho_nll),
-            "incremental": incremental.incremental_value(risk, labels, name, n_boot=n_boot, seed=seed)
-            if WITH_INCREMENTAL else None}
+            # C9 §3: вердикт по добавочной ценности к усиленной базе NLL+max+длина
+            "verdict_strong": None if strong is None else
+            ("жива" if strong["delta"] >= ALIVE_DELTA and strong["p_better"] >= ALIVE_P else
+             "в пул" if strong["delta"] > 0 and strong["p_better"] >= 0.5 else "убита"),
+            "incremental": inc}
 
 
 def card_report(risk: dict[str, np.ndarray], labels_by_target: dict[str, np.ndarray], form_mask: np.ndarray,
@@ -148,7 +157,8 @@ def card_report(risk: dict[str, np.ndarray], labels_by_target: dict[str, np.ndar
 
 
 def print_card_report(report: dict) -> None:
-    print("\n=== Вердикты по карточкам (short-form; линейка — len_norm_rag для всех) ===")
+    print(f"\n=== Вердикты по карточкам (short-form; линейка — {baselines.RULER} для всех; "
+          f"«к усиленной» — прирост сверх {baselines.STRONG_BASE}) ===")
     checks = report.get("_kill_checks", {})
     for card, by_target in report.items():
         if card.startswith("_"):
@@ -161,7 +171,11 @@ def print_card_report(report: dict) -> None:
                 continue
             best = max(rows, key=lambda r: r["delta"])
             tag = "основной" if target == "factual" else "вторичный"
-            print(f"  [{target}, {tag}] вердикт: {best['verdict'].upper()} (по {best['signal']})")
+            strong = [r for r in rows if r.get("verdict_strong")]
+            best_strong = max(strong, key=lambda r: r["incremental"][baselines.STRONG_BASE]["delta"]) if strong else None
+            print(f"  [{target}, {tag}] вердикт: {best['verdict'].upper()} (по {best['signal']})"
+                  + (f"; к усиленной базе: {best_strong['verdict_strong'].upper()} (по {best_strong['signal']})"
+                     if best_strong else ""))
             for r in rows:
                 flag = "  <= длины" if r["auroc"] <= r["len"] else ""
                 print(f"    {r['signal']:22s} auroc={r['auroc']:.3f}  NLL={r['nll']:.3f}  "

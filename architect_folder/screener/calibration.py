@@ -149,6 +149,8 @@ def run_calibration(risk: dict[str, np.ndarray], labels: np.ndarray, aux: dict, 
     test &= ok_label
     err = 1 - labels
     out = {"signals": {}, "n_dev": int(dev.sum()), "n_test": int(test.sum())}
+    if dev.sum() < 10 or test.sum() < 10:
+        return out  # нет dev/test-разбиения (например, синтетика) — калибровать не на чем
     for name, r in sorted(risk.items()):
         if np.isnan(r[dev]).mean() > 0.1 or np.isnan(r[test]).mean() > 0.1 or np.nanstd(r[dev]) == 0:
             continue
@@ -182,7 +184,7 @@ def print_calibration(target: str, res: dict) -> None:
         print(f"  {name:30s} {s['auroc_raw']:.3f} | {s['ece_platt']:.3f}/{s['ece_iso']:.3f}   | {s['brier_platt']:.3f} | "
               f"{cs} | {_f(c3['abstain_with_golden'])}/{_f(c3['abstain_without_golden'])}   | "
               f"{_f(c3['worst_group_err_marginal'])}/{_f(c3['worst_group_err_mondrian'])}{raw}")
-    for tr in res["traq"]:
+    for tr in res.get("traq", []):
         if "coverage_test" in tr:
             print(f"  traq retrieval α={tr['alpha']}: покрытие golden на test {tr['coverage_test']:.3f} "
                   f"(цель {1 - tr['alpha']:.2f}), средний размер множества {tr['mean_set_size']:.2f}, "

@@ -18,6 +18,39 @@ import torch
 _NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 
 
+def _chat_ids(tokenizer, user_content: str, device):
+    """C9 §13: Instruct-модель с chat-шаблоном, как основная генерация."""
+    text = tokenizer.apply_chat_template([{"role": "user", "content": user_content}],
+                                         add_generation_prompt=True, tokenize=False)
+    ids = tokenizer(text, add_special_tokens=False, return_tensors="pt")["input_ids"]
+    return {"input_ids": ids.to(device), "attention_mask": torch.ones_like(ids).to(device)}
+
+
+@torch.no_grad()
+def p_true_chat(model, tokenizer, question: str, passages: list[str] | None, answer: str, device) -> float:
+    """p_true в chat-шаблоне: первая реплика ассистента, P('True') против P('False')."""
+    context = "Context:\n" + "\n".join(passages) + "\n\n" if passages else ""
+    content = (f"{context}Question: {question}\nProposed answer: {answer}\n"
+               f"Is the proposed answer true or false? Answer with exactly one word, True or False.")
+    logits = model(**_chat_ids(tokenizer, content, device)).logits[0, -1, :].float()
+    t = tokenizer("True", add_special_tokens=False)["input_ids"][0]
+    f = tokenizer("False", add_special_tokens=False)["input_ids"][0]
+    return float(torch.softmax(torch.stack([logits[t], logits[f]]), dim=0)[0])
+
+
+@torch.no_grad()
+def verbalized_conf_chat(model, tokenizer, question: str, passages: list[str] | None, answer: str, device) -> float:
+    context = "Context:\n" + "\n".join(passages) + "\n\n" if passages else ""
+    content = (f"{context}Question: {question}\nProposed answer: {answer}\n"
+               f"On a scale from 0 to 100, how confident are you that this answer is correct? "
+               f"Respond with only the number.")
+    enc = _chat_ids(tokenizer, content, device)
+    out = model.generate(**enc, max_new_tokens=6, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+    text = tokenizer.decode(out[0, enc["input_ids"].shape[1]:], skip_special_tokens=True)
+    match = _NUMBER_RE.search(text)
+    return max(0.0, min(1.0, float(match.group()) / 100.0)) if match else float("nan")
+
+
 @torch.no_grad()
 def p_true(model, tokenizer, question: str, passages: list[str] | None, answer: str, device) -> float:
     """P(True) — Kadavath et al. 2022: модель сама оценивает свой ответ.

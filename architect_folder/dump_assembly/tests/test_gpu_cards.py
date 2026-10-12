@@ -48,6 +48,7 @@ def test_card_signals_and_screener_sidecar(tmp_path):
            "closed_book": {"answer": "Lyon.", "samples": ["Lyon.", "Paris."]}}
     sig = gc.card_signals(rec, contra_if_lyon, contra_if_lyon, lambda p, q, a: [{"prob": 0.2, "pred": 0}])
     assert set(sig) == {"selfcheck_nli_rag", "selfcheck_nli_cb", "ncp_rag", "ncp_cb", "ncp_cross",
+                        "selfcheck_nli_q_rag", "selfcheck_nli_q_cb", "ncp_q_rag", "ncp_q_cb", "ncp_q_cross",
                         "lettuce_max", "lettuce_mean", "lettuce_frac"}
     assert sig["ncp_cross"] == pytest.approx(((1 - 0.9) + (1 - 0.1)) / 2)
 

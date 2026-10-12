@@ -171,7 +171,8 @@ def test_card_report_runs_on_synthetic(records, monkeypatch):
     result = run_screener.run(records, n_boot=50, seed=0, cards=True)
     rep = result["card_report"]
     rows = rep["selfcheckgpt-consistency"]["factual"]
-    assert {r["signal"] for r in rows} == {"selfcheck_nli_rag", "selfcheck_nli_cb"}
+    assert {r["signal"] for r in rows} == {"selfcheck_nli_rag", "selfcheck_nli_cb",
+                                           "selfcheck_nli_q_rag", "selfcheck_nli_q_cb"}
     assert all(r["verdict"] in ("жива", "в пул", "убита") for r in rows)
 
 

@@ -62,6 +62,16 @@ def attach_sidecars(records_iter, by_qid: dict[str, dict]):
         yield r
 
 
+def drop_refusals(records_iter, counter: dict):
+    """--exclude-refusals (C9 §14): задача «верен ли содержательный ответ» —
+    short-form записи с ответом-отказом выкидываются целиком."""
+    for r in records_iter:
+        if r.get("source") != "franq_longform" and refusal.is_refusal(r["rag"]["answer"]):
+            counter["n"] = counter.get("n", 0) + 1
+            continue
+        yield r
+
+
 def build_signal_table_and_claims(records_iter, faithful_exclude_refusals: bool = False):
     """Один проход по records_iter (не список — генератор или список,
     без разницы, но каждую запись отпускаем сразу после извлечения
@@ -69,7 +79,7 @@ def build_signal_table_and_claims(records_iter, faithful_exclude_refusals: bool 
     claim_level_kendall (token_logprobs + claims, без тяжёлых полей) —
     отдельного второго прохода по тяжёлым записям больше нет."""
     rows, qids, claim_data, sources = [], [], [], []
-    splits, golden_flags, passage_scores = [], [], []
+    splits, golden_flags, passage_scores, pop_bins = [], [], [], []
     labels_lists: dict[str, list[int]] = {t: [] for t in TARGETS}
 
     for r in records_iter:
@@ -78,6 +88,7 @@ def build_signal_table_and_claims(records_iter, faithful_exclude_refusals: bool 
         qids.append(r["qid"])
         sources.append(r.get("source", "?"))
         splits.append(r.get("split", "?"))
+        pop_bins.append(int((r.get("meta") or {}).get("pop_bin", -1)))
         # is_golden = DPR hasanswer; оракул (знает gold) — не сигнал, только для калибровки/критериев
         golden_flags.append([bool(p.get("is_golden")) for p in r.get("passages", [])])
         passage_scores.append([float(p.get("score") or 0.0) for p in r.get("passages", [])])
@@ -97,7 +108,7 @@ def build_signal_table_and_claims(records_iter, faithful_exclude_refusals: bool 
     src = np.array(sources)
     aux = {"source": src, "split": np.array(splits), "form": np.where(src == "franq_longform", "long", "short"),
            "golden_flags": golden_flags, "passage_scores": passage_scores,
-           "golden_any": np.array([any(g) for g in golden_flags])}
+           "golden_any": np.array([any(g) for g in golden_flags]), "pop_bin": np.array(pop_bins)}
     return table, qids, labels_by_target, claim_data, src, aux
 
 
@@ -196,11 +207,12 @@ def claim_level_kendall(claim_data: list[tuple[list[float], list[dict]]], target
     return float(np.mean(taus)) if taus else float("nan")
 
 
-def cache_key(input_path: Path, sidecars: list[Path], faithful_exclude_refusals: bool) -> str:
+def cache_key(input_path: Path, sidecars: list[Path], faithful_exclude_refusals: bool,
+              exclude_refusals: bool = False) -> str:
     """Таблица сигналов зависит от дампа, sidecar-файлов, флага отказов и
     состава реестра — всё это в ключе (пути + размер + mtime)."""
     import hashlib
-    parts = [str(faithful_exclude_refusals), ",".join(sorted(registry.signal_polarity()))]
+    parts = [str(faithful_exclude_refusals), str(exclude_refusals), ",".join(sorted(registry.signal_polarity()))]
     for p in [input_path, *sidecars]:
         st = Path(p).stat()
         parts.append(f"{Path(p).resolve()}:{st.st_size}:{st.st_mtime_ns}")
@@ -217,7 +229,12 @@ def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusa
     table, qids, labels_by_target, claim_data, sources, aux = built
     polarity = registry.signal_polarity()
     risk = to_risk_scores(table, polarity)
-    metrics_table = compute_metrics_table(risk, labels_by_target)
+    form = np.where(sources == "franq_longform", "long", "short")
+    # C9 §4–5: основная таблица — только short-form; long-form (если есть) —
+    # отдельно в metrics_by_form, по записям его не оцениваем
+    short = form == "short"
+    metrics_table = compute_metrics_table({k: v[short] for k, v in risk.items()},
+                                          {t: l[short] for t, l in labels_by_target.items()})
     names, corr = correlation.spearman_matrix(risk)
 
     target = "factual"
@@ -229,7 +246,7 @@ def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusa
     boot_result = None
     if len(ranked) >= 2:
         name_a, name_b = ranked[0][0], ranked[1][0]
-        mask = ~(np.isnan(risk[name_a]) | np.isnan(risk[name_b])) & (labels_by_target[target] != EXCLUDED)
+        mask = ~(np.isnan(risk[name_a]) | np.isnan(risk[name_b])) & (labels_by_target[target] != EXCLUDED) & short
         boot_result = {
             "pair": (name_a, name_b),
             **bootstrap.paired_bootstrap(
@@ -238,25 +255,25 @@ def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusa
             ),
         }
 
-    form = np.where(sources == "franq_longform", "long", "short")
     by_form = {
-        g: compute_metrics_table({k: v[form == g] for k, v in risk.items()},
-                                 {t: l[form == g] for t, l in labels_by_target.items()})
-        for g in ("short", "long") if (form == g).sum() >= LEAKAGE_MIN_GROUP
-    }
+        "long": compute_metrics_table({k: v[form == "long"] for k, v in risk.items()},
+                                      {t: l[form == "long"] for t, l in labels_by_target.items()})
+    } if (form == "long").sum() >= LEAKAGE_MIN_GROUP else {}
 
     cards_result = card_report.card_report(risk, labels_by_target, form == "short", n_boot=n_boot, seed=seed,
                                            only=cards_only) if cards else None
 
     return {
         "n_records": len(qids),
+        "n_short": int(short.sum()),
         "metrics_by_form": by_form,
         "card_report": cards_result,
         "calibration": {t: calibration.run_calibration(risk, l, aux, polarity) for t, l in labels_by_target.items()}
         if calibrate else None,
         "synthesis": {t: synthesis.run_synthesis(risk, l, aux, n_boot=n_boot, seed=seed)
                       for t, l in labels_by_target.items()} if synth else None,
-        "task_dependent": {t: task_dependent.task_dependent_report(risk, l, sources, n_boot=n_boot, seed=seed)
+        "task_dependent": {t: task_dependent.task_dependent_report(risk, l, sources, n_boot=n_boot, seed=seed,
+                                                                 pop_bin=aux.get("pop_bin"))
                            for t, l in labels_by_target.items()} if task_dep else None,
         "metrics_table": metrics_table,
         "correlation": {"names": names, "matrix": corr},
@@ -269,7 +286,10 @@ def run(records_iter, n_boot: int = 1000, seed: int = 0, faithful_exclude_refusa
 
 def _print_report(result: dict) -> None:
     for target, table in result["metrics_table"].items():
-        print(f"\n=== target: {target} ({result['n_records']} записей) ===")
+        n_short = result.get("n_short", result["n_records"])
+        print(f"\n=== short-form, target: {target} ({n_short} записей) ===")
+        if "refusal_flag" in table:
+            print(f"  ориентир: флаг «ответ — отказ» сам даёт AUROC {table['refusal_flag']['auroc']:.3f}")
         ranked = sorted(table.items(), key=lambda kv: kv[1]["auroc"] if not np.isnan(kv[1]["auroc"]) else -1.0, reverse=True)
         for name, row in ranked:
             print(f"  {name:24s} auroc={row['auroc']:.3f}  aurc={row['aurc']:.3f}  "
@@ -283,7 +303,7 @@ def _print_report(result: dict) -> None:
             ranked = sorted(table.items(), key=lambda kv: kv[1]["auroc"] if not np.isnan(kv[1]["auroc"]) else -1.0,
                             reverse=True)
             n = next(iter(table.values()))["n"] if table else 0
-            print(f"\n--- {g}-form, target: {target} (n={n}), топ-12 ---")
+            print(f"\n--- {g}-form (отдельно, в оценках не используется), target: {target} (n={n}), топ-12 ---")
             for name, row in ranked[:12]:
                 print(f"  {name:30s} auroc={row['auroc']:.3f}")
 
@@ -324,6 +344,9 @@ def main() -> None:
     parser.add_argument("--faithful-exclude-refusals", action="store_true",
                         help="исключить short-form отказы («в пассажах нет информации») из оценки faithful — "
                              "для dump_pilot_v4, см. screener/refusal.py")
+    parser.add_argument("--exclude-refusals", action="store_true",
+                        help="выкинуть short-form записи с ответом-отказом (unknown и т.п.) — задача "
+                             "«верен ли содержательный ответ» (C9 §2, §14)")
     parser.add_argument("--cache-dir", type=Path, default=None,
                         help="кэш таблицы сигналов: повторный запуск с тем же дампом/sidecar не перечитывает дамп")
     parser.add_argument("--task-dependent", action="store_true",
@@ -348,12 +371,16 @@ def main() -> None:
 
     if args.sidecar:
         records_iter = attach_sidecars(records_iter, load_sidecars(args.sidecar))
+    dropped: dict = {}
+    if args.exclude_refusals:
+        records_iter = drop_refusals(records_iter, dropped)
 
     built = None
     if args.cache_dir and args.input:
         import pickle
         args.cache_dir.mkdir(parents=True, exist_ok=True)
-        cache = args.cache_dir / f"table_{cache_key(args.input, args.sidecar, args.faithful_exclude_refusals)}.pkl"
+        key = cache_key(args.input, args.sidecar, args.faithful_exclude_refusals, args.exclude_refusals)
+        cache = args.cache_dir / f"table_{key}.pkl"
         if cache.exists():
             print(f"Таблица сигналов из кэша: {cache}")
             built = pickle.loads(cache.read_bytes())
@@ -366,6 +393,8 @@ def main() -> None:
                  faithful_exclude_refusals=args.faithful_exclude_refusals, cards=args.cards,
                  calibrate=args.calibration, built=built, cards_only=args.cards_only, synth=args.synthesis,
                  task_dep=args.task_dependent)
+    if args.exclude_refusals:
+        print(f"--exclude-refusals: выкинуто short-form отказов: {dropped.get('n', 'из кэша — см. первый прогон')}")
     _print_report(result)
 
 

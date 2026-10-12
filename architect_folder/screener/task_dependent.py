@@ -26,7 +26,10 @@ def _auc(s, lab):
 
 
 def task_dependent_report(risk: dict[str, np.ndarray], labels: np.ndarray, sources: np.ndarray,
-                          n_boot: int = 1000, seed: int = 0) -> dict:
+                          n_boot: int = 1000, seed: int = 0, pop_bin: np.ndarray | None = None) -> dict:
+    """pop_bin — квантиль популярности сущности s_pop внутри отношения PopQA
+    (dump_assembly/questions.stratified_popqa; −1 у остальных): AUROC сигналов
+    по квантилям — для гипотезы о зависимости от популярности (H3)."""
     short = sources != "franq_longform"
     rng = np.random.default_rng(seed)
     out = {"per_source": {}, "popqa_vs_rest": {}}
@@ -44,7 +47,13 @@ def task_dependent_report(risk: dict[str, np.ndarray], labels: np.ndarray, sourc
             bt, br = rng.choice(ti, len(ti)), rng.choice(ri, len(ri))
             boots.append(_auc(s[bt], labels[bt]) - _auc(s[br], labels[br]))
         boots = np.array([b for b in boots if np.isfinite(b)])
-        out["popqa_vs_rest"][name] = (d0, float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5)))
+        out["popqa_vs_rest"][name] = ((d0, float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5)))
+                                      if len(boots) else (d0, float("nan"), float("nan")))
+    if pop_bin is not None and (pop_bin >= 0).any():
+        bins = sorted(set(pop_bin[pop_bin >= 0].tolist()))
+        out["popqa_by_pop_bin"] = {name: {b: _auc(risk[name][pop_bin == b], labels[pop_bin == b]) for b in bins}
+                                   for name in SIGNALS if name in risk}
+        out["popqa_rate_by_pop_bin"] = {b: float((labels[pop_bin == b] == 1).mean()) for b in bins}
     out["factual_rate"] = {src: float((labels[sources == src] == 1).mean()) for src in sorted(set(sources[short]))}
     return out
 
@@ -57,3 +66,8 @@ def print_task_dependent(target: str, rep: dict) -> None:
         flag = "  <- различается" if lo > 0 or hi < 0 else ""
         print(f"  {name:18s} " + "  ".join(f"{k}={v:.3f}" for k, v in per.items())
               + f"  | PopQA−ост.={d:+.3f} [{lo:+.3f},{hi:+.3f}]{flag}")
+    if "popqa_by_pop_bin" in rep:
+        print("  PopQA по квантилям популярности s_pop (0 — самые редкие): доля верных "
+              + ", ".join(f"{b}: {v:.2f}" for b, v in rep["popqa_rate_by_pop_bin"].items()))
+        for name, per in rep["popqa_by_pop_bin"].items():
+            print(f"  {name:18s} " + "  ".join(f"q{b}={v:.3f}" for b, v in per.items()))

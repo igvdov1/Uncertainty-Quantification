@@ -80,6 +80,53 @@ def factuality_shortform(prediction: str, gold_answers: list[str], f1_threshold:
     return int(best_f1 >= f1_threshold)
 
 
+# C9 §6: F1 ≥ 0.5 пропускал совпадение по одному общему слову («16th century» /
+# «the 12th century», «Kazan Cathedral» / «Cathedral of St Basil»). В v3-метке
+# F1 засчитывается только при вложенности: значимые слова gold-варианта есть
+# в ответе или наоборот (родовые слова ниже не считаются значимыми), F1 по
+# значимым словам ≥ 0.5, слова gold с цифрами есть в ответе. Подстрока — только по
+# границам слов («us» не находится в «virus»), пунктуация заменяется пробелом
+# («subcontinent/South Asia», «1979–80»). Старая метка — label_factual_legacy.
+GENERIC_WORDS = frozenset("""
+century centuries year years language languages river city town county province
+dynasty house family cathedral church university college school saint st mount mountain
+of and in on at for to by de la le von van du
+""".split())
+_PUNCT_OR_DASH = re.compile(r"[%s\u2010-\u2015]" % re.escape(string.punctuation))
+
+
+def normalize_answer_v3(text: str) -> str:
+    text = _PUNCT_OR_DASH.sub(" ", text.lower())
+    text = _ARTICLES.sub(" ", text)
+    return _WHITESPACE.sub(" ", text).strip()
+
+
+def _content_tokens(text: str) -> set[str]:
+    return {t.rstrip("s") if len(t) > 3 else t for t in normalize_answer_v3(text).split()} - GENERIC_WORDS
+
+
+def factuality_shortform_v3(prediction: str, gold_answers: list[str], f1_threshold: float = 0.5) -> int:
+    pred_norm = normalize_answer_v3(prediction)
+    pred_padded = f" {pred_norm} "
+    pred_content = _content_tokens(prediction)
+    for g in gold_answers:
+        g_norm = normalize_answer_v3(g)
+        if not g_norm:
+            continue
+        if g_norm == pred_norm or any(f" {g_norm}{suf} " in pred_padded for suf in ("", "s", "es")):
+            return 1
+        g_content = _content_tokens(g)
+        if not g_content or not pred_content:
+            continue
+        digits_ok = all(t in pred_content for t in g_content if any(c.isdigit() for c in t))
+        nested = g_content <= pred_content or pred_content <= g_content
+        common = len(g_content & pred_content)
+        f1 = 2 * common / (len(g_content) + len(pred_content))
+        if digits_ok and nested and f1 >= f1_threshold:
+            return 1
+    return 0
+
+
 @dataclass
 class NLIFaithfulnessScorer:
     """Обёртка над общедоступной NLI-моделью. max_entailment по всем

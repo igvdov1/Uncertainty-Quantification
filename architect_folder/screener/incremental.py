@@ -8,8 +8,8 @@
 (StratifiedKFold 5 x 5 повторов, предсказания усредняются по повторам), Δ
 с парным bootstrap по записям.
 
-Базы: len_norm_rag (NLL RAG-ответа) и len_norm_rag + mean_sample_len_rag
-(NLL + длина). Признаки — ранги (риск-ориентация уже сделана в
+Базы — screener/baselines.py (NLL, NLL+длина, усиленная NLL+max+длина и,
+если в данных есть отказы, базы с флагом отказа). Признаки — ранги (риск-ориентация уже сделана в
 run_screener.to_risk_scores): у NLL/расстояний тяжёлые хвосты, ранговое
 преобразование без меток утечки не даёт.
 """
@@ -20,9 +20,8 @@ from scipy.stats import rankdata
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold
 
-from . import bootstrap, metrics
+from . import baselines, bootstrap, metrics
 
-BASES = {"NLL": ["len_norm_rag"], "NLL+длина": ["len_norm_rag", "mean_sample_len_rag"]}
 N_SPLITS, N_REPEATS = 5, 5
 
 
@@ -56,9 +55,10 @@ def _base_oof(risk: dict[str, np.ndarray], base: list[str], m: np.ndarray, lab: 
 
 def incremental_value(risk: dict[str, np.ndarray], labels: np.ndarray, signal: str,
                       n_boot: int = 1000, seed: int = 0) -> dict[str, dict] | None:
-    cols = {c for base in BASES.values() for c in base} | {signal}
-    if any(c not in risk for c in cols):
+    if signal not in risk or baselines.RULER not in risk:
         return None
+    bases = baselines.active_bases(risk, labels >= 0)
+    cols = {c for base in bases.values() for c in base} | {signal}
     m = labels >= 0
     for c in cols:
         m &= ~np.isnan(risk[c])
@@ -66,7 +66,7 @@ def incremental_value(risk: dict[str, np.ndarray], labels: np.ndarray, signal: s
         return None
     lab = labels[m]
     out = {}
-    for name, base in BASES.items():
+    for name, base in bases.items():
         if signal in base:
             continue
         r_base = _base_oof(risk, base, m, lab, seed)

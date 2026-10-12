@@ -226,8 +226,9 @@ def run(meta: dict[str, dict], feats: dict[str, dict]) -> tuple[dict[str, dict],
 
 
 def load_meta(dump: Path, gold: Path | None, sidecars: list[Path]) -> dict[str, dict]:
-    from .labeling import factuality_shortform
-    gold_map = {g["qid"]: g["gold_answers"] for g in iter_jsonl(gold)} if gold else {}
+    from .labeling import factuality_shortform_v3 as factuality_shortform
+    gold_rows = {g["qid"]: g for g in iter_jsonl(gold)} if gold else {}
+    gold_map = {q: g["gold_answers"] for q, g in gold_rows.items()}
     sem = {}
     for p in sidecars:
         for row in iter_jsonl(p):
@@ -238,6 +239,10 @@ def load_meta(dump: Path, gold: Path | None, sidecars: list[Path]) -> dict[str, 
         m = {"split": r["split"], "source": r["source"], "label_factual": r.get("label_factual"),
              "sem_ids": sem.get(r["qid"])}
         g = gold_map.get(r["qid"])
+        gq = gold_rows.get(r["qid"], {}).get("question")
+        if gq is not None and gq.strip() != r["question"].strip():
+            # C9 §12: gold сопоставляется не только по qid, но и по тексту вопроса
+            raise ValueError(f"{r['qid']}: вопрос в gold-файле не совпадает с дампом: {gq!r} != {r['question']!r}")
         if g:
             cb = [r["closed_book"]["answer"]] + r["closed_book"].get("samples", [])[:N_HACK_SAMPLES]
             m["cb_correct"] = [bool(factuality_shortform(a, g)) for a in cb]

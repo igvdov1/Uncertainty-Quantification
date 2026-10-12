@@ -185,6 +185,7 @@ def cmd_generate(args: argparse.Namespace) -> None:
                     if ctxs:
                         p["topk_doc_ids"] = [c["doc_id"] for c in ctxs]
                         p["topk_scores"] = [c["score"] for c in ctxs]
+                        p["topk_is_golden"] = [c["is_golden"] for c in ctxs]
                         passage_texts = [c["text"] for c in ctxs]
                         rag_out = generation.generate_greedy(model, tokenizer, para_text, passage_texts, device,
                                                              prompt_version=pv)
@@ -192,6 +193,16 @@ def cmd_generate(args: argparse.Namespace) -> None:
                                                          n_samples=N_SAMPLES_PARAPHRASE, prompt_version=pv)
                         p["rag_answer"] = rag_out["answer"]
                         p["rag_samples"] = rag_samples["samples"]
+                        if args.swap_cells:
+                            # C9 §1.6 (гипотеза H2): развести вклад формулировки и вклад
+                            # пассажей — перефраз с исходными пассажами и исходный вопрос
+                            # с пассажами перефраза; только жадный ответ и его логпробы
+                            orig_texts = [x["text"] for x in r["passages"]]
+                            for key, qtext, ptexts in (("para_q_orig_ctx", para_text, orig_texts),
+                                                       ("orig_q_para_ctx", r["question"], passage_texts)):
+                                out = generation.generate_greedy(model, tokenizer, qtext, ptexts, device,
+                                                                 prompt_version=pv)
+                                p[key] = {"answer": out["answer"], "token_logprobs": out["token_logprobs"]}
                     else:
                         if para_retrieval:  # без файла ретривала не шумим на каждый перефраз
                             print(f"  [{i}] {pqid}: нет результата ретривала для перефраза", file=sys.stderr)
@@ -232,6 +243,8 @@ def main() -> None:
     p3.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     p3.add_argument("--out", required=True, type=Path)
     p3.add_argument("--no-resume", action="store_true")
+    p3.add_argument("--swap-cells", action="store_true",
+                    help="ещё две ячейки на перефраз: перефраз + исходные пассажи, исходный вопрос + пассажи перефраза")
     p3.set_defaults(func=cmd_generate)
 
     args = parser.parse_args()

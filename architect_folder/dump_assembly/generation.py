@@ -128,6 +128,13 @@ def build_prompt_ids(tokenizer, question: str, passages: list[str] | None,
     return ids, PromptSpans(instruction=(a, b), passages=passage_spans, question=(e, f))
 
 
+# Группы attention_by_group: 0 инструкция, 1 пассажи, 2 вопрос, 3 уже
+# сгенерированное, 4 служебные токены chat-шаблона (<|begin_of_text|>, заголовки
+# ролей). До C9 §8 группы 4 не было и служебные токены попадали в «контекст» —
+# а на первый токен модель сбрасывает большую долю внимания (attention sink).
+N_ATTENTION_GROUPS = 5
+
+
 def _group_for_position(pos: int, prompt_len: int, spans: PromptSpans) -> int:
     if pos >= prompt_len:
         return 3
@@ -137,7 +144,9 @@ def _group_for_position(pos: int, prompt_len: int, spans: PromptSpans) -> int:
     e, f = spans.question
     if e <= pos < f:
         return 2
-    return 1
+    if _passage_index_for_position(pos, spans) is not None:
+        return 1
+    return 4
 
 
 def _passage_index_for_position(pos: int, spans: PromptSpans):
@@ -155,12 +164,12 @@ def _entropy_from_logits(logits: torch.Tensor) -> float:
 
 def _extract_attention_fields(attn_step_layers: tuple, prompt_len: int, spans: PromptSpans, n_passages: int):
     """attn_step_layers: tuple по слоям, каждый (batch, heads, query_len, key_len).
-    Возвращает (attention_by_group[4], attention_by_passage[n_passages], attention_by_head для HEAD_LAYERS)."""
+    Возвращает (attention_by_group[N_ATTENTION_GROUPS], attention_by_passage[n_passages], attention_by_head для HEAD_LAYERS)."""
     last_layer = attn_step_layers[-1][0].mean(dim=0)  # (query_len, key_len), усреднено по головам
     row = last_layer[-1, :].float().cpu().numpy()
     key_len = row.shape[0]
 
-    group_sums = [0.0, 0.0, 0.0, 0.0]
+    group_sums = [0.0] * N_ATTENTION_GROUPS
     passage_sums = [0.0] * n_passages
     for pos in range(key_len):
         g = _group_for_position(pos, prompt_len, spans)

@@ -111,6 +111,18 @@ def card_signals(rec: dict, sc_contra, ncp_contra, lettuce_predict) -> dict[str,
         out[f"selfcheck_nli_{suf}"] = selfcheck_nli(ans, smp, sc_contra)
         out[f"ncp_{suf}"] = non_contradiction(ans, smp, ncp_contra)
     out["ncp_cross"] = non_contradiction(rec["rag"]["answer"], rec["closed_book"]["samples"], ncp_contra)
+    if rec.get("source") != "franq_longform" and rec.get("question"):
+        # C9 §17: короткий ответ без вопроса NLI не понимает («Kilimanjaro» против
+        # «Kibo» — противоречие). Как в semantic_clusters (condition_on_question):
+        # вопрос приписывается к ответу и к каждому сэмплу; прежние варианты остаются
+        q = rec["question"]
+        with_q = lambda texts: [f"{q} {t}" if t.strip() else t for t in texts]
+        for mode, suf in (("rag", "rag"), ("closed_book", "cb")):
+            ans, smp = f"{q} {rec[mode]['answer']}", with_q(rec[mode]["samples"])
+            out[f"selfcheck_nli_q_{suf}"] = selfcheck_nli(ans, smp, sc_contra) if rec[mode]["answer"].strip() else float("nan")
+            out[f"ncp_q_{suf}"] = non_contradiction(ans, smp, ncp_contra) if rec[mode]["answer"].strip() else float("nan")
+        out["ncp_q_cross"] = (non_contradiction(f"{q} {rec['rag']['answer']}", with_q(rec["closed_book"]["samples"]),
+                                                ncp_contra) if rec["rag"]["answer"].strip() else float("nan"))
     if rec["passages"]:
         out.update(lettuce_scores(lettuce_predict(rec["passages"], rec["question"], rec["rag"]["answer"])))
     else:

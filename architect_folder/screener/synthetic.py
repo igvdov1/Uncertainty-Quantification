@@ -222,6 +222,15 @@ def make_record(rng: np.random.Generator, qid: str, split: str) -> dict:
         "label_faithful": label_faithful,
         "label_factual": label_factual,
     }
+    # варианты C9 §13, §17, §18 — копии основных, без новых вызовов rng (поток
+    # случайных чисел и остальные сигналы синтетики не меняются)
+    sig, dsig = record["signals"], record["derived"]["signals"]
+    sig.update({"p_true_raw_rag": sig["p_true_rag"], "p_true_raw_cb": sig["p_true_cb"],
+                "verbalized_conf_raw_rag": sig["verbalized_conf_rag"]})
+    dsig.update({f"{k.replace('nli_', 'nli_q_').replace('ncp_', 'ncp_q_')}": dsig[k] for k in (
+        "selfcheck_nli_rag", "selfcheck_nli_cb", "ncp_rag", "ncp_cb", "ncp_cross")})
+    dsig.update({"ccp_word_rag": dsig["ccp_rag"], "ccp_word_cb": dsig["ccp_cb"], "ccp_word_mean_rag": dsig["ccp_mean_rag"],
+                 "ccp_first_rag": dsig["ccp_rag"], "ccp_first_cb": dsig["ccp_cb"], "ccp_word_diff": dsig["ccp_diff"]})
     return record
 
 

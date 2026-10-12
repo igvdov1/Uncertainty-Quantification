@@ -170,6 +170,24 @@ def verbalized_conf(record: Record, mode: str) -> float:
     return float(s[key])
 
 
+def refusal_flag(record: Record) -> float:
+    """1 — RAG-ответ является отказом (screener/refusal.py). Ориентир и
+    признак базы «NLL+отказ» (C9 §2), сам по себе не карточка."""
+    from .refusal import is_refusal
+    return float(is_refusal(record["rag"]["answer"]))
+
+
+def _raw_signal(key: str) -> Callable:
+    """Вариант self-eval сигнала без chat-шаблона (C9 §13), если он есть в дампе."""
+    def fn(record: Record) -> float:
+        s = schema.signals(record)
+        if key not in s:
+            raise KeyError(key)
+        return float(s[key])
+    fn.__name__ = key
+    return fn
+
+
 def alignscore(record: Record) -> float:
     return float(schema.signals(record)["alignscore"])
 
@@ -187,14 +205,16 @@ def nll_ratio(record: Record) -> float:
 
 
 def _context_share(record: Record) -> np.ndarray:
-    """attention-context-ratio: доля внимания текущей позиции на контекст по
-    токенам ответа. attention_by_group = [instruction, context, question,
-    generated] (generation._group_for_position), последний слой, среднее по
-    головам."""
+    """attention-context-ratio: доля внимания текущей позиции на пассажи по
+    токенам ответа (последний слой, среднее по головам) = сумма
+    attention_by_passage. До C9 §8 бралась attention_by_group[:, 1], куда
+    попадали и служебные токены шаблона (attention sink) — карточка мерила в
+    основном их. Знаменатель — всё внимание позиции (softmax, ≈ 1)."""
+    p = np.asarray(record["rag"]["attention_by_passage"], dtype=float)
     g = np.asarray(record["rag"]["attention_by_group"], dtype=float)
-    if g.ndim != 2 or g.shape[1] != 4 or len(g) == 0:
-        raise KeyError("attention_by_group")
-    return g[:, 1] / np.clip(g.sum(axis=1), 1e-12, None)
+    if p.ndim != 2 or len(p) == 0 or g.ndim != 2 or len(g) != len(p):
+        raise KeyError("attention_by_passage")
+    return p.sum(axis=1) / np.clip(g.sum(axis=1), 1e-12, None)
 
 
 def attn_ctx_mean(record: Record) -> float:
@@ -210,7 +230,8 @@ def attn_ctx_vs_param(record: Record) -> float:
     """Контекст против параметрической части промпта (инструкция + вопрос),
     без учёта уже сгенерированного: среднее log(ctx / (instr + question))."""
     g = np.asarray(record["rag"]["attention_by_group"], dtype=float)
-    return float(np.mean(np.log((g[:, 1] + 1e-6) / (g[:, 0] + g[:, 2] + 1e-6))))
+    ctx = np.asarray(record["rag"]["attention_by_passage"], dtype=float).sum(axis=1)
+    return float(np.mean(np.log((ctx + 1e-6) / (g[:, 0] + g[:, 2] + 1e-6))))
 
 
 def _dense_scores(record: Record) -> np.ndarray:
@@ -363,6 +384,10 @@ SHARED_SPECS: list[SignalSpec] = [
     SignalSpec("margin_12", margin_12, False, "confidence"),
     SignalSpec("topk_spread", topk_spread, False, "uncertainty"),
     SignalSpec("alignscore", alignscore, False, "confidence"),
+    SignalSpec("refusal_flag", refusal_flag, False, "uncertainty"),
+    SignalSpec("p_true_raw_rag", _raw_signal("p_true_raw_rag"), False, "confidence"),
+    SignalSpec("p_true_raw_cb", _raw_signal("p_true_raw_cb"), False, "confidence"),
+    SignalSpec("verbalized_conf_raw_rag", _raw_signal("verbalized_conf_raw_rag"), False, "confidence"),
 ]
 
 FREE_CARD_SPECS: list[SignalSpec] = [
@@ -398,6 +423,12 @@ CARD_SPECS: list[SignalSpec] = FREE_CARD_SPECS + [
     SignalSpec("ncp_rag", _derived("ncp_rag"), False, "confidence"),
     SignalSpec("ncp_cb", _derived("ncp_cb"), False, "confidence"),
     SignalSpec("ncp_cross", _derived("ncp_cross"), False, "confidence"),
+    # те же с вопросом перед ответом и сэмплами (C9 §17)
+    SignalSpec("selfcheck_nli_q_rag", _derived("selfcheck_nli_q_rag"), False, "uncertainty"),
+    SignalSpec("selfcheck_nli_q_cb", _derived("selfcheck_nli_q_cb"), False, "uncertainty"),
+    SignalSpec("ncp_q_rag", _derived("ncp_q_rag"), False, "confidence"),
+    SignalSpec("ncp_q_cb", _derived("ncp_q_cb"), False, "confidence"),
+    SignalSpec("ncp_q_cross", _derived("ncp_q_cross"), False, "confidence"),
     # density-based-dev-embeddings (dump_assembly/local_cards.py, только test)
     SignalSpec("md_rag", _derived("md_rag"), False, "uncertainty"),
     SignalSpec("md_cb", _derived("md_cb"), False, "uncertainty"),
@@ -411,6 +442,13 @@ CARD_SPECS: list[SignalSpec] = FREE_CARD_SPECS + [
     SignalSpec("ccp_mean_rag", _derived("ccp_mean_rag"), False, "uncertainty"),
     SignalSpec("ccp_mean_cb", _derived("ccp_mean_cb"), False, "uncertainty"),
     SignalSpec("ccp_diff", _derived("ccp_diff"), False, "uncertainty"),
+    # CCP по словам и по первому слову (C9 §18)
+    SignalSpec("ccp_word_rag", _derived("ccp_word_rag"), False, "uncertainty"),
+    SignalSpec("ccp_word_cb", _derived("ccp_word_cb"), False, "uncertainty"),
+    SignalSpec("ccp_word_mean_rag", _derived("ccp_word_mean_rag"), False, "uncertainty"),
+    SignalSpec("ccp_first_rag", _derived("ccp_first_rag"), False, "uncertainty"),
+    SignalSpec("ccp_first_cb", _derived("ccp_first_cb"), False, "uncertainty"),
+    SignalSpec("ccp_word_diff", _derived("ccp_word_diff"), False, "uncertainty"),
     # memory-strength-paraphrase / semantic-reformulation-entropy / context-sufficiency (gpu_cards2.py)
     SignalSpec("mem_entropy_greedy", _derived("mem_entropy_greedy"), False, "uncertainty"),
     SignalSpec("mem_entropy_all", _derived("mem_entropy_all"), False, "uncertainty"),

@@ -25,6 +25,18 @@ CCP утверждения = Π_j CCP_word(x_j); сигнал неопредел
     весят, а NLI-вызовов экономят большую часть);
   - префикс ответа обрезается до последних 300 символов.
 
+Вариант по словам (C9 §18), пишется рядом с прежним (ccp_word_*, ccp_first_*):
+  - жадный ответ делится на слова по токенам Llama (новое слово — токен с
+    ведущим пробелом «Ġ»); токен конца ответа и слова из одной пунктуации
+    в произведение не входят;
+  - альтернативы — top-k первого токена слова с P ≥ WORD_MIN_PROB; каждая
+    дописывается жадно до конца слова (одна короткая пакетная генерация на
+    слово); вес альтернативы = P(её первого токена), как и у жадного слова;
+  - NLI: «вопрос + префикс + слово-альтернатива» против «вопрос + префикс +
+    жадное слово»;
+  - ccp_first_* — только первое слово ответа (гипотеза H4: неопределённость
+    на ответной сущности).
+
 Запуск:
     # локально, CPU
     python -m dump_assembly.ccp extract --dump dump_pilot_v4.jsonl --out ccp_input.jsonl
@@ -48,6 +60,7 @@ MODES = (("rag", "rag"), ("closed_book", "cb"))
 DEFAULT_GENERATOR = "meta-llama/Llama-3.1-8B-Instruct"
 DEFAULT_NLI = "microsoft/deberta-large-mnli"
 TOP_K, MIN_PROB, PREFIX_CHARS = 10, 1e-3, 300
+WORD_MIN_PROB, WORD_MAX_TOKENS = 1e-2, 8
 CONTRA, NEUTRAL, ENTAIL = 0, 1, 2
 
 
@@ -94,6 +107,47 @@ def answer_ccp(question: str, greedy: list[int], step_topk: list[tuple[list[int]
     return [ccp_word(p_greedy[j], probs, labs) for j, (probs, labs) in enumerate(alts_per_pos)]
 
 
+def word_spans(token_strs: list[str], is_special: list[bool], is_punct: list[bool]) -> list[tuple[int, int]]:
+    """Слова жадного ответа как полуинтервалы позиций токенов [start, end).
+    Новое слово начинается с токена с ведущим пробелом/переводом строки
+    (BPE Llama: «Ġ», «Ċ») или после пунктуации; спецтокены и слова только из
+    пунктуации отбрасываются."""
+    spans, start = [], None
+    for j, (t, sp, pu) in enumerate(zip(token_strs, is_special, is_punct)):
+        boundary = sp or pu or start is None or t.startswith(("Ġ", "Ċ", "▁")) or is_punct[j - 1]
+        if boundary and start is not None:
+            spans.append((start, j))
+            start = None
+        if not sp and not pu and start is None:
+            start = j
+    if start is not None:
+        spans.append((start, len(token_strs)))
+    return spans
+
+
+def answer_ccp_words(question: str, greedy: list[int], spans: list[tuple[int, int]],
+                     step_topk: list[tuple[list[int], list[float]]], p_greedy: list[float],
+                     decode, complete_word, nli) -> list[float]:
+    """CCP_word по словам; complete_word(prefix_ids, alt_ids) -> тексты слов-альтернатив."""
+    out = []
+    for start, end in spans:
+        prefix = decode(greedy[:start])[-PREFIX_CHARS:]
+        orig_word = decode(greedy[start:end]).strip()
+        ids, probs = step_topk[start]
+        alts = [(i, p) for i, p in zip(ids, probs) if i != greedy[start] and p >= WORD_MIN_PROB]
+        if not alts:
+            out.append(1.0)
+            continue
+        words = complete_word(greedy[:start], [i for i, _ in alts])
+        pairs = [(f"{question} {prefix}{' ' if prefix and not prefix.endswith(' ') else ''}{w.strip()}",
+                  f"{question} {prefix}{' ' if prefix and not prefix.endswith(' ') else ''}{orig_word}") for w in words]
+        labels = nli(pairs)
+        # слово-альтернатива, совпавшая с жадным словом после дописывания, — то же слово
+        labels = [ENTAIL if w.strip().lower() == orig_word.lower() else l for w, l in zip(words, labels)]
+        out.append(ccp_word(p_greedy[start], [p for _, p in alts], labels))
+    return out
+
+
 # ---- модели ---------------------------------------------------------------
 
 class Generator:
@@ -118,6 +172,33 @@ class Generator:
 
     def decode(self, ids: list[int]) -> str:
         return self.tokenizer.decode(ids, skip_special_tokens=True)
+
+    def token_info(self, ids: list[int]) -> tuple[list[str], list[bool], list[bool]]:
+        import string
+        strs = self.tokenizer.convert_ids_to_tokens(ids)
+        special = set(self.tokenizer.all_special_ids)
+        texts = [self.tokenizer.decode([i]).strip() for i in ids]
+        punct = [bool(t) and all(c in string.punctuation or c in "–—…“”‘’«»" for c in t) for t in texts]
+        return strs, [i in special for i in ids], punct
+
+    def complete_words(self, prompt_ids: list[int], prefix: list[int], alt_ids: list[int]) -> list[str]:
+        """Жадно дописывает каждую альтернативу первого токена до конца слова.
+        Все входы одной длины — пакет без паддинга."""
+        torch = self.torch
+        base = prompt_ids + prefix
+        ids = torch.tensor([base + [a] for a in alt_ids], device=self.model.device)
+        with torch.no_grad():
+            out = self.model.generate(input_ids=ids, attention_mask=torch.ones_like(ids),
+                                      max_new_tokens=WORD_MAX_TOKENS, do_sample=False,
+                                      pad_token_id=self.tokenizer.eos_token_id)
+        words = []
+        for row in out[:, len(base):].tolist():
+            strs, special, punct = self.token_info(row)
+            end = 1
+            while end < len(row) and not (special[end] or punct[end] or strs[end].startswith(("Ġ", "Ċ", "▁"))):
+                end += 1
+            words.append(self.decode(row[:end]))
+        return words
 
 
 class NLI:
@@ -195,7 +276,16 @@ def cmd_run(args) -> None:
                 words = answer_ccp(r["question"], greedy, steps, p_greedy, gen.decode, nli)
                 for k, v in ccp_scores(words).items():
                     sig[f"{k}_{suf}"] = v
+                if args.word_level and r["source"] != LONGFORM:
+                    spans = word_spans(*gen.token_info(greedy))
+                    ww = answer_ccp_words(r["question"], greedy, spans, steps, p_greedy, gen.decode,
+                                          lambda pre, alts: gen.complete_words(prompt_ids, pre, alts), nli)
+                    sc = ccp_scores(ww)
+                    sig[f"ccp_word_{suf}"], sig[f"ccp_word_mean_{suf}"] = sc["ccp"], sc["ccp_mean"]
+                    sig[f"ccp_first_{suf}"] = 1 - ww[0] if ww else float("nan")
             sig["ccp_diff"] = sig["ccp_rag"] - sig["ccp_cb"]
+            if "ccp_word_rag" in sig:
+                sig["ccp_word_diff"] = sig["ccp_word_rag"] - sig["ccp_word_cb"]
             fout.write(json.dumps({"qid": r["qid"], "models": {"generator": args.generator, "nli": args.nli_model},
                                    "top1_match": row_match, "signals": sig}) + "\n")
             if (n + 1) % 25 == 0:
@@ -228,6 +318,7 @@ def main() -> None:
     p.add_argument("--only-short", action="store_true",
                    help="без long-form: их ответы ~400 токенов, это большая часть NLI-вызовов")
     p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--word-level", action="store_true", help="ещё CCP по словам (ccp_word_*, ccp_first_*), C9 §18")
     p.set_defaults(fn=cmd_run)
     args = parser.parse_args()
     args.fn(args)
