@@ -13,9 +13,11 @@
 # Параметры (переменные окружения):
 #   PER_SOURCE=2000 DEV_FRAC=0.4   — размер выборки на источник и доля dev
 #   LIMIT=                         — смоук: только первые N вопросов на всех шагах (например LIMIT=40)
-#   RETRIEVAL_SOURCE=disk|stream   — disk: скачать корпус в CORPUS_DIR (wget -c, докачивается);
+#   RETRIEVAL_SOURCE=disk|stream   — disk: корпус в CORPUS_DIR — уже распакованный (psgs_w100.tsv и
+#                                    wikipedia_embeddings/, как после старого runbook) или скачивается туда
+#                                    архивами (wget -c, докачивается);
 #                                    stream: читать по сети без записи на диск (обрыв = начать заново)
-#   CORPUS_DIR=contriever_corpus   BM25=auto|0   CLEAN_CORPUS=0 (1 — удалить корпус после ретрива, −70 ГБ)
+#   CORPUS_DIR=contriever   BM25=auto|0   CLEAN_CORPUS=0 (1 — удалить корпус после ретрива, −70 ГБ)
 #
 # Всё резюмируется: при обрыве запустить ещё раз — готовые шаги пропускаются, долгие продолжают с места.
 # Лог: c4_log.txt
@@ -24,7 +26,7 @@ MODEL="${MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
 PER_SOURCE="${PER_SOURCE:-2000}"
 DEV_FRAC="${DEV_FRAC:-0.4}"
 RETRIEVAL_SOURCE="${RETRIEVAL_SOURCE:-disk}"
-CORPUS_DIR="${CORPUS_DIR:-contriever_corpus}"
+CORPUS_DIR="${CORPUS_DIR:-contriever}"
 BM25="${BM25:-auto}"
 CLEAN_CORPUS="${CLEAN_CORPUS:-0}"
 LIMIT_ARGS=()
@@ -53,15 +55,26 @@ log "4/16 плотный ретрив Contriever-MSMARCO, top-20"
 if ! done_step retrieval.jsonl || [[ $(wc -l < retrieval.jsonl) -ne $(wc -l < retrieval_queries.jsonl) ]]; then
     if [[ "$RETRIEVAL_SOURCE" == "disk" ]]; then
         mkdir -p "$CORPUS_DIR"
-        run wget -c -q --show-progress -O "$CORPUS_DIR/psgs_w100.tsv.gz" "$PSGS_URL"
-        run wget -c -q --show-progress -O "$CORPUS_DIR/wikipedia_embeddings.tar" "$EMB_URL"
-        EMB="$CORPUS_DIR/wikipedia_embeddings.tar"; PSGS="$CORPUS_DIR/psgs_w100.tsv.gz"
+        if [[ -s "$CORPUS_DIR/psgs_w100.tsv" ]]; then
+            PSGS="$CORPUS_DIR/psgs_w100.tsv"
+        else
+            run wget -c -q --show-progress -O "$CORPUS_DIR/psgs_w100.tsv.gz" "$PSGS_URL"
+            PSGS="$CORPUS_DIR/psgs_w100.tsv.gz"
+        fi
+        if [[ -d "$CORPUS_DIR/wikipedia_embeddings" ]] && [[ -n "$(ls -A "$CORPUS_DIR/wikipedia_embeddings")" ]]; then
+            EMB="$CORPUS_DIR/wikipedia_embeddings"
+        else
+            run wget -c -q --show-progress -O "$CORPUS_DIR/wikipedia_embeddings.tar" "$EMB_URL"
+            EMB="$CORPUS_DIR/wikipedia_embeddings.tar"
+        fi
+        echo "  корпус: $PSGS, эмбеддинги: $EMB" | tee -a c4_log.txt
     else
         EMB="$EMB_URL"; PSGS="$PSGS_URL"
     fi
     run python -m dump_assembly.streaming_retrieval --queries retrieval_queries.jsonl \
         --embeddings "$EMB" --passages "$PSGS" --out retrieval.jsonl
-    [[ "$CLEAN_CORPUS" == "1" ]] && rm -rf "$CORPUS_DIR"
+    [[ "$CLEAN_CORPUS" == "1" ]] && rm -rf "$CORPUS_DIR/psgs_w100.tsv" "$CORPUS_DIR/psgs_w100.tsv.gz" \
+        "$CORPUS_DIR/wikipedia_embeddings" "$CORPUS_DIR/wikipedia_embeddings.tar"
 fi
 
 log "5/16 основная генерация (промпт v2): ответы RAG/CB, сэмплы, p_true, verbalized, метки factual"
