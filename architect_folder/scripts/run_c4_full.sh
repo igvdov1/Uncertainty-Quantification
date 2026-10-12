@@ -91,9 +91,17 @@ if [[ -z "${PYSERINI_PY:-}" ]]; then
         [[ -x "$env/bin/python" ]] && { PYSERINI_PY="$(cd "$env" && pwd)/bin/python"; break; }
     done
 fi
-# Java из того же окружения (conda-окружение с openjdk), если JAVA_HOME не задан
-PY_ENV_DIR="$(dirname "$(dirname "$(command -v "$PYSERINI_PY")")")"
-if [[ -z "${JAVA_HOME:-}" && -x "$PY_ENV_DIR/bin/java" ]]; then export JAVA_HOME="$PY_ENV_DIR"; fi
+# JDK для pyserini (нужен javac): JAVA_HOME, если задан; иначе окружение pyserini (conda с openjdk),
+# JDK рядом с репозиторием (/workspace/jdk*), системные /usr/lib/jvm/*, javac из PATH
+if [[ -z "${JAVA_HOME:-}" || ! -x "${JAVA_HOME:-}/bin/javac" ]]; then
+    PY_ENV_DIR="$(dirname "$(dirname "$(command -v "$PYSERINI_PY")")")"
+    for jdk in "$PY_ENV_DIR" ../../jdk* ../jdk* /workspace/jdk* /opt/jdk* /usr/lib/jvm/*; do
+        if [[ -x "$jdk/bin/javac" ]]; then export JAVA_HOME="$(cd "$jdk" && pwd)"; break; fi
+    done
+    if [[ -z "${JAVA_HOME:-}" ]] && command -v javac >/dev/null; then
+        export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+    fi
+fi
 if [[ "$BM25" == "auto" ]] && ! "$PYSERINI_PY" -c "import pyserini" 2>/dev/null; then
     echo "  ВНИМАНИЕ: pyserini не найден ($PYSERINI_PY) — BM25 пропущен (карточка retriever-disagreement будет пустой)" \
         | tee -a c4_log.txt
@@ -102,11 +110,15 @@ fi
 if [[ "$BM25" != "0" ]]; then
     log "6/16 BM25 (retriever-disagreement)"
     if ! done_step dump_bm25.jsonl || [[ $(wc -l < dump_bm25.jsonl) -ne $(wc -l < dump_base.jsonl) ]]; then
-        echo "  pyserini: $PYSERINI_PY" | tee -a c4_log.txt
-        run "$PYSERINI_PY" -m dump_assembly.augment_perturbations fill-bm25 --in dump_base.jsonl --out dump_bm25.jsonl \
-            --pyserini-index wikipedia-dpr
+        echo "  pyserini: $PYSERINI_PY, JAVA_HOME=${JAVA_HOME:-не найден}" | tee -a c4_log.txt
+        # BM25 нужен одной карточке — его падение не должно останавливать прогон
+        if ! run "$PYSERINI_PY" -m dump_assembly.augment_perturbations fill-bm25 --in dump_base.jsonl \
+                --out dump_bm25.jsonl --pyserini-index wikipedia-dpr; then
+            echo "  ВНИМАНИЕ: BM25 упал (см. выше) — продолжаю без него" | tee -a c4_log.txt
+            rm -f dump_bm25.jsonl
+        fi
     fi
-    DUMP_IN=dump_bm25.jsonl
+    [[ -s dump_bm25.jsonl ]] && DUMP_IN=dump_bm25.jsonl
 fi
 
 log "7/16 ответы на перефразы + ячейки «перефраз × пассажи» (H2)"
