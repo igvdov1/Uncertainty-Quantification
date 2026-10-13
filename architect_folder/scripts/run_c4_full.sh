@@ -37,6 +37,16 @@ EMB_URL=https://dl.fbaipublicfiles.com/contriever/embeddings/contriever-msmarco/
 
 log() { echo "=== $(date '+%F %T') $* ===" | tee -a c4_log.txt; }
 run() { "$@" 2>&1 | tee -a c4_log.txt; }
+# долгие шаги резюмируются по qid — если процесс убит (OOM-kill, код 137), перезапускаем до 5 раз
+retry() {
+    local a
+    for a in 1 2 3 4 5; do
+        run "$@" && return 0
+        echo "  попытка $a упала (код $?), перезапуск через 30 с — готовое не пересчитывается" | tee -a c4_log.txt
+        sleep 30
+    done
+    return 1
+}
 done_step() { [[ -s "$1" ]] && { echo "  есть $1 — пропускаю" | tee -a c4_log.txt; }; }
 
 log "1/16 отбор вопросов"
@@ -46,7 +56,7 @@ fi
 if [[ -n "${LIMIT:-}" ]]; then head -n "$LIMIT" questions_full.jsonl > questions.jsonl; else cp questions_full.jsonl questions.jsonl; fi
 
 log "2/16 перефразы (chat-шаблон + фильтр)"
-run python -m dump_assembly.paraphrases generate --questions questions.jsonl --model "$MODEL" --out paraphrases.jsonl
+retry python -m dump_assembly.paraphrases generate --questions questions.jsonl --model "$MODEL" --out paraphrases.jsonl
 
 log "3/16 запросы для ретрива (вопросы + перефразы)"
 run python -m dump_assembly.paraphrases retrieval-input --questions questions.jsonl --paraphrases paraphrases.jsonl \
@@ -79,7 +89,7 @@ if ! done_step retrieval.jsonl || [[ $(wc -l < retrieval.jsonl) -ne $(wc -l < re
 fi
 
 log "5/16 основная генерация (промпт v2): ответы RAG/CB, сэмплы, p_true, verbalized, метки factual"
-run python -m dump_assembly.run_assembly --model "$MODEL" --questions questions.jsonl \
+retry python -m dump_assembly.run_assembly --model "$MODEL" --questions questions.jsonl \
     --retrieval-output retrieval.jsonl --paraphrases paraphrases.jsonl --prompt-version v2 \
     --skip-attention-head --out dump_base.jsonl
 
@@ -122,7 +132,7 @@ if [[ "$BM25" != "0" ]]; then
 fi
 
 log "7/16 ответы на перефразы + ячейки «перефраз × пассажи» (H2)"
-run python -m dump_assembly.augment_perturbations generate --in "$DUMP_IN" \
+retry python -m dump_assembly.augment_perturbations generate --in "$DUMP_IN" \
     --paraphrase-retrieval retrieval.jsonl --swap-cells --model "$MODEL" --out dump_full.jsonl
 
 log "8/16 входы для карточек"
@@ -135,17 +145,17 @@ for m in semantic_clusters:se_input gpu_cards:gpu_cards_input gpu_cards2:gpu_car
 done
 
 log "9/16 semantic entropy: NLI-кластеры"
-run python -m dump_assembly.semantic_clusters cluster --input se_input.jsonl --out semantic_clusters.jsonl
+retry python -m dump_assembly.semantic_clusters cluster --input se_input.jsonl --out semantic_clusters.jsonl
 log "10/16 SelfCheck / NCP (с вопросом и без) / LettuceDetect"
-run python -m dump_assembly.gpu_cards run --input gpu_cards_input.jsonl --out gpu_cards.jsonl
+retry python -m dump_assembly.gpu_cards run --input gpu_cards_input.jsonl --out gpu_cards.jsonl
 log "11/16 memory-strength / SRE / context-sufficiency"
-run python -m dump_assembly.gpu_cards2 run --input gpu_cards2_input.jsonl --out gpu_cards2.jsonl --generator "$MODEL"
+retry python -m dump_assembly.gpu_cards2 run --input gpu_cards2_input.jsonl --out gpu_cards2.jsonl --generator "$MODEL"
 log "12/16 CCP (по токенам и по словам)"
-run python -m dump_assembly.ccp run --input ccp_input.jsonl --out ccp.jsonl --only-short --word-level --generator "$MODEL"
+retry python -m dump_assembly.ccp run --input ccp_input.jsonl --out ccp.jsonl --only-short --word-level --generator "$MODEL"
 log "13/16 ATS: обучение линейной головы"
 done_step ats_head.pt || run python -m dump_assembly.ats train --model "$MODEL" --n-examples 5000 --out ats_head.pt
 log "14/16 INTRYGUE / ReDeEP / LUMINA / TAD / HACK / source-clustering"
-run python -m dump_assembly.mech_cards run --input mech_input.jsonl --out-dir mech_out --only-short \
+retry python -m dump_assembly.mech_cards run --input mech_input.jsonl --out-dir mech_out --only-short \
     --ats-head ats_head.pt --generator "$MODEL"
 
 log "15/16 упаковка"

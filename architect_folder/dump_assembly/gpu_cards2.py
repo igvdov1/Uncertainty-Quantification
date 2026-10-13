@@ -26,6 +26,7 @@ GPU-пачка №2 карточек банка B (researcher_folder/B2_cards.md
 """
 from __future__ import annotations
 
+from .resume import completed_qids
 import argparse
 import json
 from collections import Counter
@@ -128,7 +129,7 @@ def cmd_extract(args) -> None:
 
 
 def cmd_run(args) -> None:
-    done = {j["qid"] for j in iter_jsonl(args.out)} if args.out.exists() else set()
+    done = completed_qids(args.out)  # с очисткой оборванной последней строки (dump_assembly/resume.py)
     todo = [r for r in iter_jsonl(args.input) if r["qid"] not in done]
     if args.limit:
         todo = todo[:args.limit]

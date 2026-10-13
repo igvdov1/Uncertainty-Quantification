@@ -309,7 +309,10 @@ def cmd_run(args) -> None:
         other = rows[group[(group.index(i) + 1) % len(group)]]   # LUMINA: контекст следующей записи той же формы
         with ex.torch.no_grad():   # logit lens / lm_head вне no_grad строили граф — лишняя память на GPU
             feats = ex.record(r, other)
-        np.savez(args.out_dir / f"{r['qid']}.npz", **feats)
+        # атомарно: убитый посреди записи процесс не оставит битый .npz, который resume счёл бы готовым
+        tmp = args.out_dir / f"{r['qid']}.tmp.npz"
+        np.savez(tmp, **feats)
+        tmp.replace(args.out_dir / f"{r['qid']}.npz")
         if (n + 1) % 10 == 0:
             print(f"  {n + 1}/{len(todo)}")
     print(f"Готово -> {args.out_dir}")

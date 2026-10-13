@@ -69,6 +69,22 @@ def iter_jsonl(path: Path):
                 yield json.loads(line)
 
 
+_QID_RE = __import__("re").compile(r'\{"qid": "([^"]+)"')
+
+
+def _release_memory() -> None:
+    """Записи дампа тяжёлые (hidden states, top-k по токенам): разбор тысяч таких JSON
+    фрагментирует кучу glibc, и RSS растёт до OOM-kill (на прогоне C4 — после ~1000
+    записей). gc + malloc_trim возвращают освобождённое системе."""
+    import ctypes
+    import gc
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except OSError:  # не Linux
+        pass
+
+
 def _paraphrase_qid(qid: str, i: int) -> str:
     return f"{qid}__para{i}"
 
@@ -147,19 +163,23 @@ def cmd_generate(args: argparse.Namespace) -> None:
 
     already_done = set()
     if not args.no_resume and args.out.exists():
-        with open(args.out) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        already_done.add(json.loads(line)["qid"])
-                    except (json.JSONDecodeError, KeyError):
-                        continue
+        # если прошлый прогон убили посреди записи строки (OOM), последняя строка оборвана —
+        # файл переписывается только валидными строками до дозаписи (как в run_assembly)
+        from .run_assembly import load_completed_qids_and_clean
+        already_done = load_completed_qids_and_clean(args.out)
         print(f"Resume: {len(already_done)} qid уже готовы, пропускаю их")
 
     file_mode = "a" if already_done else "w"
     with open(args.out, file_mode) as fout:
-        for i, r in enumerate(iter_jsonl(args.in_path)):
+        for i, line in enumerate(open(args.in_path)):
+            if not line.strip():
+                continue
+            # готовые записи пропускаются без разбора тяжёлого JSON (qid — первый ключ записи)
+            m = _QID_RE.match(line)
+            if m and m.group(1) in already_done:
+                continue
+            r = json.loads(line)
+            del line
             if r["qid"] in already_done:
                 continue
             is_longform = r["source"] == "franq_longform"
@@ -212,8 +232,12 @@ def cmd_generate(args: argparse.Namespace) -> None:
                     p["rag_samples"] = []
 
             fout.write(json.dumps(r) + "\n")
+            del r, paraphrases
             if (i + 1) % 10 == 0:
+                fout.flush()
                 print(f"  {i + 1} done")
+            if (i + 1) % 50 == 0:
+                _release_memory()
 
     print(f"Done. Wrote {args.out}")
 

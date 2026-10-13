@@ -260,7 +260,7 @@ def main() -> None:
     args = parser.parse_args()
     meta = load_meta(args.dump, args.gold, args.sidecar)
     feats = {}
-    for f in sorted(args.mech_dir.glob("*.npz")):
+    for f in sorted(p for p in args.mech_dir.glob("*.npz") if not p.name.endswith(".tmp.npz")):
         with np.load(f) as z:
             feats[f.stem] = {k: z[k] for k in z.files}
     feats = {q: v for q, v in feats.items() if q in meta}

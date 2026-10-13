@@ -31,31 +31,10 @@ from .questions import Question, build_pilot_question_set, read_question_file
 
 
 def load_completed_qids_and_clean(out_path: Path) -> set[str]:
-    """Для resume: qid уже успешно записанных записей в существующем
-    выводе. Если прошлый прогон упал посреди записи строки, в файле может
-    остаться оборванный, невалидный JSON последней строкой — если потом
-    просто открыть файл на дозапись (append), новая строка приклеится
-    прямо к этому мусору без разделителя и испортит файл. Поэтому здесь
-    файл сразу перезаписывается только валидными строками (аккуратный
-    "compact"), прежде чем начинать append."""
-    if not out_path.exists():
-        return set()
-    valid_lines, completed = [], set()
-    with open(out_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                qid = json.loads(line)["qid"]
-            except (json.JSONDecodeError, KeyError):
-                continue
-            valid_lines.append(line)
-            completed.add(qid)
-    with open(out_path, "w") as f:
-        for line in valid_lines:
-            f.write(line + "\n")
-    return completed
+    """Для resume: qid уже записанных записей; оборванная последняя строка
+    выкидывается до дозаписи (dump_assembly/resume.py)."""
+    from .resume import completed_qids
+    return completed_qids(out_path)
 
 
 def process_one(model, tokenizer, device, q: Question, nli_scorer,

@@ -30,6 +30,7 @@ from collections import Counter
 from pathlib import Path
 
 from .labeling import normalize_answer_v3
+from .resume import completed_qids
 
 N_KEEP = 3
 N_CANDIDATES = 6
@@ -140,7 +141,7 @@ def cmd_generate(args) -> None:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     questions = list(iter_jsonl(args.questions))[: args.limit]
-    done = done_qids(args.out)
+    done = completed_qids(args.out)
     todo = [q for q in questions if q["qid"] not in done]
     print(f"Перефразы: {len(done)} уже есть, к обработке {len(todo)}")
     if not todo:

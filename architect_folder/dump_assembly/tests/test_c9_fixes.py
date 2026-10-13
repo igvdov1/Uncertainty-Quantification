@@ -181,3 +181,13 @@ def test_embedding_shards_skip_faiss_index_files(tmp_path):
     (tmp_path / "index_meta.faiss").write_bytes(b"not a pickle")
     shards = list(streaming_retrieval.iter_embedding_shards(str(tmp_path)))
     assert [ids for ids, _ in shards] == [["0a", "0b"], ["1a", "1b"]]
+
+
+def test_completed_qids_drops_truncated_tail(tmp_path):
+    from dump_assembly.resume import completed_qids
+    p = tmp_path / "out.jsonl"
+    p.write_text('{"qid": "a", "x": 1}\n{"qid": "b", "x": 2}\n{"qid": "c", "x": [1, 2')
+    assert completed_qids(p) == {"a", "b"}
+    with open(p, "a") as f:
+        f.write('{"qid": "c", "x": 3}\n')
+    assert [json.loads(l)["qid"] for l in p.read_text().splitlines()] == ["a", "b", "c"]
