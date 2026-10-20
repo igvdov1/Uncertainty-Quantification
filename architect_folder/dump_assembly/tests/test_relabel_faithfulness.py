@@ -100,9 +100,10 @@ def test_apply_replaces_shortform_with_judge_and_softens_longform(records, tmp_p
     assert records[2]["claims"][0]["label_faithful"] == 1
 
 
-def test_apply_fails_loudly_without_verdict(records):
-    with pytest.raises(KeyError):
-        rf.apply_to_record(records[0], {}, 0.8)
+def test_apply_without_verdict_leaves_label_none(records):
+    # short-form запись без вердикта судьи: метка None, скринер исключает её из faithful
+    rec = next(r for r in records if r["source"] != rf.LONGFORM_SOURCE)
+    assert rf.apply_to_record(rec, {}, 0.8)[1] is None and rec["label_faithful"] is None
 
 
 def test_calibration_report(records, tmp_path):

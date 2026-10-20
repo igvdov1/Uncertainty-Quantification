@@ -96,6 +96,8 @@ def build_signal_table_and_claims(records_iter, faithful_exclude_refusals: bool 
             if (t == "faithful" and faithful_exclude_refusals and r.get("source") != "franq_longform"
                     and refusal.is_refusal(r["rag"]["answer"])):
                 labels_lists[t].append(EXCLUDED)
+            elif t == "faithful" and r.get("label_faithful", 0) is None:
+                labels_lists[t].append(EXCLUDED)  # нет вердикта судьи (relabel_faithfulness apply)
             else:
                 labels_lists[t].append(schema.label(r, t))
         claim_data.append((r["rag"]["token_logprobs"], r.get("claims", [])))

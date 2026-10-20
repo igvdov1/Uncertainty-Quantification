@@ -350,9 +350,11 @@ def apply_to_record(record: dict, judged: dict[str, dict], min_frac: float,
         new, _ = franq_longform_answer_labels(record.get("claims", []), min_frac)
     else:
         j = judged.get(f"{record['qid']}_answer")
-        if j is None or j["label_faithful"] is None:
-            raise KeyError(f"{record['qid']}: нет вердикта судьи — прогоните judge до конца (resume) "
-                           f"или проверьте, что judge_input собран из этого же дампа")
+        if j is None or j["verdict"] is None:
+            # нет вердикта (судья не дошёл или его ответ не разобрался): метка None —
+            # скринер исключает такие записи из оценки faithful; число печатает cmd_apply
+            record["label_faithful"] = None
+            return old, None
         new = verdict_to_label(j["verdict"], abstain_faithful)
         if record.get("claims"):
             record["claims"][0]["label_faithful"] = new
@@ -363,13 +365,18 @@ def apply_to_record(record: dict, judged: dict[str, dict], min_frac: float,
 def cmd_apply(args) -> None:
     judged = load_judge_labels(args.labels, list(iter_jsonl(args.input)))
     stats = Counter()
-    align, labels_short = [], []
+    align, labels_short, missing_ids = [], [], []
     with open(args.dump) as fin, open(args.out, "w") as fout:
         for line in fin:
             r = json.loads(line)
             kind = "long" if r["source"] == LONGFORM_SOURCE else "short"
             old, new = apply_to_record(r, judged, args.faithful_min_frac, not args.abstain_unfaithful)
             stats[f"{kind}_n"] += 1
+            if new is None:
+                stats[f"{kind}_missing"] += 1
+                missing_ids.append(r["qid"])
+                fout.write(json.dumps(r) + "\n")
+                continue
             stats[f"{kind}_pos"] += new
             stats[f"{kind}_changed"] += int(old != new)
             if kind == "short":
@@ -379,7 +386,10 @@ def cmd_apply(args) -> None:
 
     for kind in ("short", "long"):
         print(f"{kind}-form: {stats[kind + '_n']} записей, faithful=1 у {stats[kind + '_pos']}, "
-              f"метка изменилась у {stats[kind + '_changed']}")
+              f"метка изменилась у {stats[kind + '_changed']}, без вердикта судьи {stats[kind + '_missing']}")
+    if missing_ids:
+        print(f"ВНИМАНИЕ: {len(missing_ids)} записей без вердикта судьи — label_faithful=None, в оценку faithful "
+              f"не входят: {', '.join(missing_ids[:10])}{' …' if len(missing_ids) > 10 else ''}")
     # санити: alignscore против новой метки больше не должен давать ~1.0
     pairs = [(a, l) for a, l in zip(align, labels_short) if a == a]
     pos = [a for a, l in pairs if l == 1]
